@@ -1,0 +1,16 @@
+[Unit]
+Description=codex-auth-broker Factory Droid Responses proxy
+Documentation=https://github.com/safzanpirani/codex-auth-broker
+After=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/codex-auth-broker serve
+Restart=on-failure
+RestartSec=3
+Environment=CODEX_AUTH_BROKER_LISTEN=127.0.0.1:8317
+Environment=CODEX_AUTH_BROKER_API_KEY_FILE=%h/.codex-auth-broker/client.key
+Environment=CODEX_AUTH_BROKER_PROMPT_CACHE_KEY=factory-droid
+
+[Install]
+WantedBy=default.target

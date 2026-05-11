@@ -1,0 +1,6 @@
+codex-auth-broker
+*.log
+*.tmp
+.DS_Store
+.env
+client.key
