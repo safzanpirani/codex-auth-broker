@@ -17,9 +17,10 @@ import (
 const maxRequestBodyBytes = 128 * 1024 * 1024
 
 type responsesProxy struct {
-	cfg    config
-	auth   *authManager
-	client *http.Client
+	cfg      config
+	auth     *authManager
+	requests *requestLogStore
+	client   *http.Client
 }
 
 type requestInfo struct {
@@ -41,7 +42,10 @@ func (p *responsesProxy) handleHealth(w http.ResponseWriter, _ *http.Request) {
 }
 
 func (p *responsesProxy) handleModels(w http.ResponseWriter, r *http.Request) {
+	logEntry := p.beginRequestLog(r)
+	defer logEntry.finish()
 	if !p.authorizedClient(r) {
+		logEntry.markError(http.StatusUnauthorized, "unauthorized")
 		writeProxyError(w, http.StatusUnauthorized, "unauthorized")
 		return
 	}
@@ -59,16 +63,21 @@ func (p *responsesProxy) handleModels(w http.ResponseWriter, r *http.Request) {
 }
 
 func (p *responsesProxy) handleResponses(w http.ResponseWriter, r *http.Request) {
+	logEntry := p.beginRequestLog(r)
+	defer logEntry.finish()
 	if !p.authorizedClient(r) {
+		logEntry.markError(http.StatusUnauthorized, "unauthorized")
 		writeProxyError(w, http.StatusUnauthorized, "unauthorized")
 		return
 	}
 	body, err := decodeRequestBody(r.Body)
 	if err != nil {
+		logEntry.markError(http.StatusBadRequest, err.Error())
 		writeProxyError(w, http.StatusBadRequest, err.Error())
 		return
 	}
 	info := normalizeResponsesBody(body, p.cfg, r)
+	logEntry.markRequest(body, info, r)
 	log.Printf("responses request model=%s normalized=%s stream=%t prompt_cache_key=%t prompt_cache_retention=%t",
 		info.Model, info.NormalizedModel, info.Stream, info.PromptCacheKeySet, info.PromptCacheRetentionSet)
 
@@ -79,16 +88,19 @@ func (p *responsesProxy) handleResponses(w http.ResponseWriter, r *http.Request)
 	}
 	encoded, err := json.Marshal(upstreamBody)
 	if err != nil {
+		logEntry.markError(http.StatusBadRequest, "invalid request body")
 		writeProxyError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
 	access, err := p.auth.current(r.Context())
 	if err != nil {
+		logEntry.markError(http.StatusBadGateway, "Codex auth failed: "+err.Error())
 		writeProxyError(w, http.StatusBadGateway, "Codex auth failed: "+err.Error())
 		return
 	}
 	req, err := http.NewRequestWithContext(r.Context(), http.MethodPost, p.cfg.upstreamURL, bytes.NewReader(encoded))
 	if err != nil {
+		logEntry.markError(http.StatusBadGateway, "build upstream request failed")
 		writeProxyError(w, http.StatusBadGateway, "build upstream request failed")
 		return
 	}
@@ -110,13 +122,16 @@ func (p *responsesProxy) handleResponses(w http.ResponseWriter, r *http.Request)
 
 	resp, err := p.client.Do(req)
 	if err != nil {
+		logEntry.markError(http.StatusBadGateway, "upstream request failed: "+err.Error())
 		writeProxyError(w, http.StatusBadGateway, "upstream request failed: "+err.Error())
 		return
 	}
 	defer resp.Body.Close()
+	logEntry.Entry.UpstreamStatus = resp.StatusCode
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		responseBody, _ := io.ReadAll(io.LimitReader(resp.Body, 64*1024))
+		logEntry.markError(resp.StatusCode, summarizeUpstreamError(responseBody, resp.StatusCode))
 		log.Printf("upstream responses error status=%d model=%s body_len=%d body=%q request_shape=%s",
 			resp.StatusCode, info.NormalizedModel, len(responseBody),
 			redactTokenLikeText(string(responseBody)), requestShape(upstreamBody))
@@ -132,23 +147,30 @@ func (p *responsesProxy) handleResponses(w http.ResponseWriter, r *http.Request)
 	if !info.Stream {
 		finalResponse, err := aggregateResponsesSSE(resp.Body)
 		if err != nil {
+			logEntry.markError(http.StatusBadGateway, "aggregate upstream stream failed: "+err.Error())
 			writeProxyError(w, http.StatusBadGateway, "aggregate upstream stream failed: "+err.Error())
 			return
 		}
-		logUsage(finalResponse)
+		logEntry.markUsage(logUsage(finalResponse))
+		logEntry.Entry.Status = http.StatusOK
 		writeJSON(w, http.StatusOK, finalResponse)
 		return
 	}
+	logEntry.Entry.Status = resp.StatusCode
 	copyResponseHeaders(w, resp.Header, true)
 	w.WriteHeader(resp.StatusCode)
-	copyStreamingResponse(w, resp.Body)
+	logEntry.markUsage(copyStreamingResponse(w, resp.Body))
 }
 
 func (p *responsesProxy) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
+	logEntry := p.beginRequestLog(r)
+	defer logEntry.finish()
 	if !p.authorizedClient(r) {
+		logEntry.markError(http.StatusUnauthorized, "unauthorized")
 		writeProxyError(w, http.StatusUnauthorized, "unauthorized")
 		return
 	}
+	logEntry.markError(http.StatusNotImplemented, "not implemented")
 	writeProxyError(w, http.StatusNotImplemented, "Factory Droid uses /v1/responses; /v1/chat/completions is not implemented yet")
 }
 
@@ -189,6 +211,12 @@ func normalizeResponsesBody(body map[string]any, cfg config, r *http.Request) re
 		if effort != "" {
 			ensureReasoningEffort(body, effort)
 		}
+	}
+	if info.ReasoningEffort == "" {
+		info.ReasoningEffort = reasoningEffortFromBody(body)
+	}
+	if stringField(body, "prompt_cache_retention") != "" || stringField(body, "promptCacheRetention") != "" {
+		info.PromptCacheRetentionSet = true
 	}
 	if _, ok := body["store"]; !ok {
 		body["store"] = false
@@ -281,6 +309,18 @@ func ensureReasoningEffort(body map[string]any, effort string) {
 	if stringField(reasoning, "summary") == "" {
 		reasoning["summary"] = "auto"
 	}
+}
+
+func reasoningEffortFromBody(body map[string]any) string {
+	reasoning, _ := body["reasoning"].(map[string]any)
+	if reasoning == nil {
+		return ""
+	}
+	effort := stringField(reasoning, "effort")
+	if normalized := normalizeReasoningEffort(effort); normalized != "" {
+		return normalized
+	}
+	return strings.TrimSpace(effort)
 }
 
 func normalizeInput(body map[string]any) {
@@ -549,39 +589,145 @@ func aggregateResponsesSSE(r io.Reader) (map[string]any, error) {
 	return final, nil
 }
 
-func logUsage(response map[string]any) {
+type tokenUsage struct {
+	InputTokens  *int64
+	OutputTokens *int64
+	CachedTokens *int64
+	TotalTokens  *int64
+}
+
+func logUsage(response map[string]any) tokenUsage {
+	usage := extractTokenUsage(response)
+	log.Printf("response usage input_tokens=%s cached_tokens=%s total_tokens=%s",
+		logTokenValue(usage.InputTokens), logTokenValue(usage.CachedTokens), logTokenValue(usage.TotalTokens))
+	return usage
+}
+
+func extractTokenUsage(response map[string]any) tokenUsage {
 	usage, _ := response["usage"].(map[string]any)
 	if usage == nil {
-		return
+		return tokenUsage{}
+	}
+	summary := tokenUsage{
+		InputTokens:  firstNumericIntField(usage, "input_tokens", "prompt_tokens"),
+		OutputTokens: firstNumericIntField(usage, "output_tokens", "completion_tokens"),
+		TotalTokens:  firstNumericIntField(usage, "total_tokens"),
 	}
 	details, _ := usage["input_tokens_details"].(map[string]any)
 	if details == nil {
 		details, _ = usage["prompt_tokens_details"].(map[string]any)
 	}
-	cached, _ := numericField(details, "cached_tokens")
-	input, _ := numericField(usage, "input_tokens")
-	if input == 0 {
-		input, _ = numericField(usage, "prompt_tokens")
+	if details != nil {
+		summary.CachedTokens = firstNumericIntField(details, "cached_tokens")
 	}
-	total, _ := numericField(usage, "total_tokens")
-	log.Printf("response usage input_tokens=%.0f cached_tokens=%.0f total_tokens=%.0f", input, cached, total)
+	return summary
 }
 
-func copyStreamingResponse(w http.ResponseWriter, r io.Reader) {
+func firstNumericIntField(m map[string]any, keys ...string) *int64 {
+	for _, key := range keys {
+		value, ok := numericField(m, key)
+		if !ok {
+			continue
+		}
+		rounded := int64(value)
+		return &rounded
+	}
+	return nil
+}
+
+func logTokenValue(value *int64) string {
+	if value == nil {
+		return "unknown"
+	}
+	return fmt.Sprintf("%d", *value)
+}
+
+func summarizeUpstreamError(body []byte, status int) string {
+	trimmed := strings.TrimSpace(redactTokenLikeText(string(body)))
+	if trimmed == "" {
+		return fmt.Sprintf("upstream returned %d with an empty body", status)
+	}
+	return trimmed
+}
+
+type sseUsageTracker struct {
+	pending   string
+	dataLines []string
+	usage     tokenUsage
+}
+
+func (t *sseUsageTracker) feed(chunk []byte) {
+	t.pending += string(chunk)
+	for {
+		index := strings.IndexByte(t.pending, '\n')
+		if index < 0 {
+			return
+		}
+		line := strings.TrimRight(t.pending[:index], "\r")
+		t.pending = t.pending[index+1:]
+		t.consumeLine(line)
+	}
+}
+
+func (t *sseUsageTracker) finish() tokenUsage {
+	if strings.TrimSpace(t.pending) != "" {
+		t.consumeLine(strings.TrimRight(t.pending, "\r"))
+	}
+	t.flush()
+	return t.usage
+}
+
+func (t *sseUsageTracker) consumeLine(line string) {
+	if line == "" {
+		t.flush()
+		return
+	}
+	if strings.HasPrefix(line, "data:") {
+		t.dataLines = append(t.dataLines, strings.TrimSpace(strings.TrimPrefix(line, "data:")))
+	}
+}
+
+func (t *sseUsageTracker) flush() {
+	if len(t.dataLines) == 0 {
+		return
+	}
+	data := strings.TrimSpace(strings.Join(t.dataLines, "\n"))
+	t.dataLines = nil
+	if data == "" || data == "[DONE]" {
+		return
+	}
+	var event map[string]any
+	if err := json.Unmarshal([]byte(data), &event); err != nil {
+		return
+	}
+	if response, ok := event["response"].(map[string]any); ok {
+		if usage := extractTokenUsage(response); usage.hasAny() {
+			t.usage = usage
+		}
+	}
+}
+
+func (u tokenUsage) hasAny() bool {
+	return u.InputTokens != nil || u.OutputTokens != nil || u.CachedTokens != nil || u.TotalTokens != nil
+}
+
+func copyStreamingResponse(w http.ResponseWriter, r io.Reader) tokenUsage {
 	buf := make([]byte, 32*1024)
 	flusher, _ := w.(http.Flusher)
+	tracker := &sseUsageTracker{}
 	for {
 		n, readErr := r.Read(buf)
 		if n > 0 {
+			tracker.feed(buf[:n])
 			if _, writeErr := w.Write(buf[:n]); writeErr != nil {
-				return
+				return tracker.finish()
 			}
 			if flusher != nil {
 				flusher.Flush()
 			}
 		}
 		if readErr != nil {
-			return
+			return tracker.finish()
 		}
 	}
 }

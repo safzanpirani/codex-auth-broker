@@ -8,17 +8,20 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 )
 
 const (
-	defaultListen       = "127.0.0.1:8317"
-	defaultRefreshSkew  = 10 * time.Minute
-	defaultHTTPTimeout  = 10 * time.Minute
-	defaultPromptKey    = "factory-droid"
-	defaultUpstreamURL  = "https://chatgpt.com/backend-api/codex/responses"
-	defaultInstructions = "You are a helpful coding assistant."
+	defaultListen          = "127.0.0.1:8317"
+	defaultRefreshSkew     = 10 * time.Minute
+	defaultHTTPTimeout     = 10 * time.Minute
+	defaultPromptKey       = "factory-droid"
+	defaultUpstreamURL     = "https://chatgpt.com/backend-api/codex/responses"
+	defaultUsageURL        = "https://chatgpt.com/backend-api/wham/usage"
+	defaultInstructions    = "You are a helpful coding assistant."
+	defaultRequestLogLimit = 1000
 )
 
 var (
@@ -36,8 +39,10 @@ type config struct {
 	promptCacheRetention string
 	refreshSkew          time.Duration
 	upstreamURL          string
+	usageURL             string
 	models               []string
 	timeout              time.Duration
+	requestLogLimit      int
 }
 
 func main() {
@@ -87,14 +92,21 @@ func runServe(args []string) error {
 		},
 	}
 	proxy := &responsesProxy{
-		cfg:  cfg,
-		auth: auth,
+		cfg:      cfg,
+		auth:     auth,
+		requests: newRequestLogStore(cfg.requestLogLimit),
 		client: &http.Client{
 			Timeout: cfg.timeout,
 		},
 	}
 
 	mux := http.NewServeMux()
+	mux.HandleFunc("GET /", proxy.handleDashboard)
+	mux.HandleFunc("GET /dashboard", proxy.handleDashboard)
+	mux.HandleFunc("GET /dashboard/api/requests", proxy.handleDashboardRequests)
+	mux.HandleFunc("DELETE /dashboard/api/requests", proxy.handleDashboardRequests)
+	mux.HandleFunc("GET /dashboard/api/usage", proxy.handleCodexUsage)
+	mux.HandleFunc("GET /usage", proxy.handleCodexUsage)
 	mux.HandleFunc("GET /healthz", proxy.handleHealth)
 	mux.HandleFunc("GET /v1/models", proxy.handleModels)
 	mux.HandleFunc("POST /v1/responses", proxy.handleResponses)
@@ -103,6 +115,7 @@ func runServe(args []string) error {
 	log.Printf("codex-auth-broker listening on %s", cfg.listen)
 	log.Printf("using Codex auth file %s", cfg.authFile)
 	log.Printf("upstream responses endpoint %s", cfg.upstreamURL)
+	log.Printf("dashboard available at http://%s/dashboard", cfg.listen)
 	if strings.TrimSpace(cfg.apiKey) == "" {
 		log.Printf("client API key disabled; bind to localhost or a private interface only")
 	}
@@ -143,9 +156,11 @@ func loadConfig(args []string) (config, error) {
 		promptCacheKey:       envOr("CODEX_AUTH_BROKER_PROMPT_CACHE_KEY", defaultPromptKey),
 		promptCacheRetention: envOr("CODEX_AUTH_BROKER_PROMPT_CACHE_RETENTION", ""),
 		upstreamURL:          envOr("CODEX_AUTH_BROKER_UPSTREAM_RESPONSES_URL", defaultUpstreamURL),
+		usageURL:             envOr("CODEX_AUTH_BROKER_USAGE_URL", defaultUsageURL),
 		refreshSkew:          defaultRefreshSkew,
 		models:               defaultModels(),
 		timeout:              defaultHTTPTimeout,
+		requestLogLimit:      defaultRequestLogLimit,
 	}
 	if value := strings.TrimSpace(os.Getenv("CODEX_AUTH_BROKER_REFRESH_SKEW")); value != "" {
 		parsed, err := time.ParseDuration(value)
@@ -156,6 +171,13 @@ func loadConfig(args []string) (config, error) {
 	}
 	if value := strings.TrimSpace(os.Getenv("CODEX_AUTH_BROKER_MODELS")); value != "" {
 		cfg.models = splitCSV(value)
+	}
+	if value := strings.TrimSpace(os.Getenv("CODEX_AUTH_BROKER_REQUEST_LOG_LIMIT")); value != "" {
+		parsed, err := strconv.Atoi(value)
+		if err != nil {
+			return cfg, fmt.Errorf("invalid CODEX_AUTH_BROKER_REQUEST_LOG_LIMIT: %w", err)
+		}
+		cfg.requestLogLimit = parsed
 	}
 
 	fs := flag.NewFlagSet("codex-auth-broker", flag.ContinueOnError)
@@ -169,9 +191,11 @@ func loadConfig(args []string) (config, error) {
 	fs.StringVar(&cfg.promptCacheKey, "prompt-cache-key", cfg.promptCacheKey, "prompt_cache_key to inject when absent; empty disables injection")
 	fs.StringVar(&cfg.promptCacheRetention, "prompt-cache-retention", cfg.promptCacheRetention, "prompt_cache_retention to inject when absent: in_memory or 24h")
 	fs.StringVar(&cfg.upstreamURL, "upstream-responses-url", cfg.upstreamURL, "ChatGPT Codex Responses endpoint")
+	fs.StringVar(&cfg.usageURL, "usage-url", cfg.usageURL, "ChatGPT Codex usage endpoint")
 	fs.StringVar(&modelsValue, "models", modelsValue, "comma-separated model ids to return from /v1/models")
 	fs.StringVar(&skewValue, "refresh-skew", skewValue, "refresh access token when it expires within this duration")
 	fs.StringVar(&timeoutValue, "timeout", timeoutValue, "upstream request timeout")
+	fs.IntVar(&cfg.requestLogLimit, "request-log-limit", cfg.requestLogLimit, "maximum in-memory dashboard request entries")
 	fs.Usage = func() { usage(fs.Output()) }
 	if err := fs.Parse(args); err != nil {
 		return cfg, err
@@ -206,6 +230,9 @@ func loadConfig(args []string) (config, error) {
 	if retention := strings.TrimSpace(cfg.promptCacheRetention); retention != "" && retention != "in_memory" && retention != "24h" {
 		return cfg, errors.New("prompt-cache-retention must be empty, in_memory, or 24h")
 	}
+	if cfg.requestLogLimit < 0 {
+		return cfg, errors.New("request-log-limit must be zero or greater")
+	}
 	return cfg, nil
 }
 
@@ -230,6 +257,7 @@ Common flags:
   --api-key-file           Optional file containing client-facing bearer key
   --prompt-cache-key       Inject prompt_cache_key when clients omit it
   --prompt-cache-retention Inject prompt_cache_retention when clients omit it
+  --request-log-limit      In-memory dashboard request history size
 `)
 }
 
@@ -245,6 +273,16 @@ func defaultModels() []string {
 		"gpt-5.4(medium)",
 		"gpt-5.4(high)",
 		"gpt-5.4(xhigh)",
+		"gpt-5.4-mini",
+		"gpt-5.4-mini(low)",
+		"gpt-5.4-mini(medium)",
+		"gpt-5.4-mini(high)",
+		"gpt-5.4-mini(xhigh)",
+		"gpt-5.3-codex",
+		"gpt-5.3-codex(low)",
+		"gpt-5.3-codex(medium)",
+		"gpt-5.3-codex(high)",
+		"gpt-5.3-codex(xhigh)",
 	}
 }
 

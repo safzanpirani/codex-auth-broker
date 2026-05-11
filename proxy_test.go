@@ -72,8 +72,27 @@ func TestNormalizeResponsesBodyFactoryDefaults(t *testing.T) {
 	if first["role"] != "user" {
 		t.Fatalf("input role = %#v, want user", first["role"])
 	}
-	if !info.Stream || !info.PromptCacheKeySet || info.PromptCacheRetentionSet {
+	if !info.Stream || !info.PromptCacheKeySet || !info.PromptCacheRetentionSet {
 		t.Fatalf("unexpected info: %#v", info)
+	}
+}
+
+func TestNormalizeResponsesBodyCapturesNativeReasoningEffort(t *testing.T) {
+	body := map[string]any{
+		"model": "gpt-5.3-codex",
+		"input": "hello",
+		"reasoning": map[string]any{
+			"effort": "medium",
+		},
+	}
+	req := httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
+	info := normalizeResponsesBody(body, config{}, req)
+
+	if body["model"] != "gpt-5.3-codex" {
+		t.Fatalf("model = %#v, want gpt-5.3-codex", body["model"])
+	}
+	if info.ReasoningEffort != "medium" {
+		t.Fatalf("ReasoningEffort = %#v, want medium", info.ReasoningEffort)
 	}
 }
 
@@ -95,5 +114,69 @@ func TestAggregateResponsesSSE(t *testing.T) {
 	first := output[0].(map[string]any)
 	if first["id"] != "msg_1" {
 		t.Fatalf("output[0].id = %#v, want msg_1", first["id"])
+	}
+}
+
+func TestExtractTokenUsage(t *testing.T) {
+	response := map[string]any{
+		"usage": map[string]any{
+			"input_tokens":  json.Number("100"),
+			"output_tokens": json.Number("25"),
+			"total_tokens":  json.Number("125"),
+			"input_tokens_details": map[string]any{
+				"cached_tokens": json.Number("75"),
+			},
+		},
+	}
+	usage := extractTokenUsage(response)
+	if usage.InputTokens == nil || *usage.InputTokens != 100 {
+		t.Fatalf("input_tokens = %#v, want 100", usage.InputTokens)
+	}
+	if usage.OutputTokens == nil || *usage.OutputTokens != 25 {
+		t.Fatalf("output_tokens = %#v, want 25", usage.OutputTokens)
+	}
+	if usage.CachedTokens == nil || *usage.CachedTokens != 75 {
+		t.Fatalf("cached_tokens = %#v, want 75", usage.CachedTokens)
+	}
+	if usage.TotalTokens == nil || *usage.TotalTokens != 125 {
+		t.Fatalf("total_tokens = %#v, want 125", usage.TotalTokens)
+	}
+}
+
+func TestSSEUsageTrackerCapturesStreamingFinalUsage(t *testing.T) {
+	tracker := &sseUsageTracker{}
+	tracker.feed([]byte("event: response.completed\n"))
+	tracker.feed([]byte(`data: {"type":"response.completed","response":{"usage":{"input_tokens":50,"output_tokens":7,"total_tokens":57,"input_tokens_details":{"cached_tokens":31}}}}` + "\n\n"))
+
+	usage := tracker.finish()
+	if usage.InputTokens == nil || *usage.InputTokens != 50 {
+		t.Fatalf("input_tokens = %#v, want 50", usage.InputTokens)
+	}
+	if usage.OutputTokens == nil || *usage.OutputTokens != 7 {
+		t.Fatalf("output_tokens = %#v, want 7", usage.OutputTokens)
+	}
+	if usage.CachedTokens == nil || *usage.CachedTokens != 31 {
+		t.Fatalf("cached_tokens = %#v, want 31", usage.CachedTokens)
+	}
+	if usage.TotalTokens == nil || *usage.TotalTokens != 57 {
+		t.Fatalf("total_tokens = %#v, want 57", usage.TotalTokens)
+	}
+}
+
+func TestRequestLogStoreBoundsAndOrder(t *testing.T) {
+	store := newRequestLogStore(2)
+	store.add(requestLogEntry{Status: 200, Model: "first"})
+	store.add(requestLogEntry{Status: 200, Model: "second"})
+	store.add(requestLogEntry{Status: 500, Model: "third"})
+
+	snapshot := store.snapshot(10)
+	if snapshot.Retained != 2 || snapshot.TotalSeen != 3 {
+		t.Fatalf("snapshot counts = retained %d total %d, want 2 and 3", snapshot.Retained, snapshot.TotalSeen)
+	}
+	if len(snapshot.RequestLog) != 2 {
+		t.Fatalf("len(requests) = %d, want 2", len(snapshot.RequestLog))
+	}
+	if snapshot.RequestLog[0].Model != "third" || snapshot.RequestLog[1].Model != "second" {
+		t.Fatalf("request order = %#v, want newest first", snapshot.RequestLog)
 	}
 }

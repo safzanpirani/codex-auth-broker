@@ -18,7 +18,6 @@ Security-sensitive areas:
 - logging token values;
 - public network binding without client auth;
 - auth-file permission handling;
-- prompt or response data leaking through logs.
+- prompt or response data leaking through logs or dashboard request history.
 
 The broker should never return the Codex OAuth refresh token to clients.
-

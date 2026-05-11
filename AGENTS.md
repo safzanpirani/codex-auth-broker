@@ -20,6 +20,16 @@ OAuth login, while keeping the real refresh token local.
 - Factory Droid 0.122 sends extra OpenAI SDK fields; keep
   `prompt_cache_retention`, `stream_options`, `user`, and max-token aliases
   stripped before forwarding to the Codex backend.
+- The dashboard is intentionally served by this Go binary. Keep it dependency
+  free unless there is a strong reason to add a frontend build step.
+- Dashboard request history must stay in memory only. Do not persist prompt
+  text, completion text, request bodies, bearer keys, access tokens, or refresh
+  tokens.
+- Live Codex usage comes from `GET https://chatgpt.com/backend-api/wham/usage`
+  using the local access token and `ChatGPT-Account-Id` header when present.
+- Keep the advertised model set, README model examples, and Factory/Pi docs in
+  sync. The current primary set is `gpt-5.5`, `gpt-5.4`, `gpt-5.4-mini`, and
+  `gpt-5.3-codex`, with reasoning-effort suffixes where useful.
 
 ## Development
 
