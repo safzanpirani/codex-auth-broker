@@ -15,6 +15,7 @@ import (
 
 const (
 	defaultListen          = "127.0.0.1:8317"
+	defaultCursorListen    = "127.0.0.1:8318"
 	defaultRefreshSkew     = 10 * time.Minute
 	defaultHTTPTimeout     = 10 * time.Minute
 	defaultPromptKey       = "factory-droid"
@@ -32,6 +33,7 @@ var (
 
 type config struct {
 	listen               string
+	cursorListen         string
 	authFile             string
 	apiKey               string
 	apiKeyFile           string
@@ -111,6 +113,9 @@ func runServe(args []string) error {
 	mux.HandleFunc("GET /v1/models", proxy.handleModels)
 	mux.HandleFunc("POST /v1/responses", proxy.handleResponses)
 	mux.HandleFunc("POST /v1/chat/completions", proxy.handleChatCompletions)
+	cursorMux := http.NewServeMux()
+	cursorShim := newCursorShim(proxy)
+	cursorMux.HandleFunc("/", cursorShim.handle)
 
 	log.Printf("codex-auth-broker listening on %s", cfg.listen)
 	log.Printf("using Codex auth file %s", cfg.authFile)
@@ -119,12 +124,26 @@ func runServe(args []string) error {
 	if strings.TrimSpace(cfg.apiKey) == "" {
 		log.Printf("client API key disabled; bind to localhost or a private interface only")
 	}
+	if strings.TrimSpace(cfg.cursorListen) != "" {
+		log.Printf("cursor-agent shim listening on %s", cfg.cursorListen)
+	}
 	server := &http.Server{
 		Addr:              cfg.listen,
 		Handler:           mux,
 		ReadHeaderTimeout: 15 * time.Second,
 	}
-	return server.ListenAndServe()
+	if strings.TrimSpace(cfg.cursorListen) == "" {
+		return server.ListenAndServe()
+	}
+	cursorServer := &http.Server{
+		Addr:              cfg.cursorListen,
+		Handler:           cursorMux,
+		ReadHeaderTimeout: 15 * time.Second,
+	}
+	errs := make(chan error, 2)
+	go func() { errs <- cursorServer.ListenAndServe() }()
+	go func() { errs <- server.ListenAndServe() }()
+	return <-errs
 }
 
 func runDoctor(args []string) error {
@@ -148,8 +167,13 @@ func runDoctor(args []string) error {
 }
 
 func loadConfig(args []string) (config, error) {
+	cursorListen := defaultCursorListen
+	if value, ok := os.LookupEnv("CODEX_AUTH_BROKER_CURSOR_LISTEN"); ok {
+		cursorListen = strings.TrimSpace(value)
+	}
 	cfg := config{
 		listen:               envOr("CODEX_AUTH_BROKER_LISTEN", defaultListen),
+		cursorListen:         cursorListen,
 		authFile:             envOr("CODEX_AUTH_FILE", defaultAuthFile()),
 		apiKey:               firstNonEmptyEnv("CODEX_AUTH_BROKER_API_KEY", "OPENAI_API_KEY"),
 		apiKeyFile:           envOr("CODEX_AUTH_BROKER_API_KEY_FILE", ""),
@@ -185,6 +209,7 @@ func loadConfig(args []string) (config, error) {
 	timeoutValue := cfg.timeout.String()
 	modelsValue := strings.Join(cfg.models, ",")
 	fs.StringVar(&cfg.listen, "listen", cfg.listen, "listen address, for example 127.0.0.1:8317 or a Tailscale IP")
+	fs.StringVar(&cfg.cursorListen, "cursor-listen", cfg.cursorListen, "optional cursor-agent Connect-RPC shim listen address; empty disables it")
 	fs.StringVar(&cfg.authFile, "auth-file", cfg.authFile, "Codex auth.json path")
 	fs.StringVar(&cfg.apiKey, "api-key", cfg.apiKey, "optional client-facing bearer key")
 	fs.StringVar(&cfg.apiKeyFile, "api-key-file", cfg.apiKeyFile, "optional file containing client-facing bearer key")
@@ -252,6 +277,7 @@ Commands:
 
 Common flags:
   --listen                 Listen address
+  --cursor-listen          Cursor Agent shim listen address; empty disables it
   --auth-file              Codex auth.json path
   --api-key                Optional client-facing bearer key
   --api-key-file           Optional file containing client-facing bearer key

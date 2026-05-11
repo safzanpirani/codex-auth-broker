@@ -23,6 +23,8 @@ internet.
   - `GET /dashboard/api/requests`
   - `GET /v1/models`
   - `POST /v1/responses`
+- Optionally exposes a local Cursor Agent Connect-RPC shim on a second
+  listener for `cursor-agent --endpoint`.
 - Supports streaming and non-streaming Responses clients.
 - Normalizes Factory model names like `gpt-5.5(medium)`.
 - Preserves or injects `prompt_cache_key` for model-side prompt caching.
@@ -210,6 +212,30 @@ requests. Cost metadata should use the equivalent OpenAI API per-million-token
 prices for reporting, even though traffic through this broker uses Codex OAuth
 instead of an OpenAI API billing key.
 
+## Cursor Agent Shim
+
+The broker can also listen on a Cursor Agent-compatible endpoint. This is a
+lightweight compatibility shim inside the same Go process; it still sends model
+traffic through the broker's Codex-backed Responses path and does not call
+Cursor's `api2.cursor.sh` service.
+
+By default, `serve` starts the Responses API on `127.0.0.1:8317` and the Cursor
+shim on `127.0.0.1:8318`:
+
+```bash
+./codex-auth-broker serve
+cursor-agent --endpoint http://127.0.0.1:8318 --api-key dev --trust --model gpt-5.5 -p "say hello"
+```
+
+The Cursor API key is a local dummy value for the shim. Use `--cursor-listen ''`
+or `CODEX_AUTH_BROKER_CURSOR_LISTEN=''` to disable this listener. Keep the
+listener bound to localhost unless you are on a private network and understand
+the risk.
+
+Implemented today: Cursor CLI bootstrap, model listing/default model stubs,
+`Run`/`RunSSE` text streaming, and basic `list_dir` client-side tool round trips.
+Other Cursor-specific services are stubbed only as needed for CLI startup.
+
 ## Factory Droid Over Tailscale
 
 Run the broker on the machine that owns the Codex login:
@@ -263,6 +289,7 @@ Flags and equivalent environment variables:
 | Flag | Environment | Default |
 | --- | --- | --- |
 | `--listen` | `CODEX_AUTH_BROKER_LISTEN` | `127.0.0.1:8317` |
+| `--cursor-listen` | `CODEX_AUTH_BROKER_CURSOR_LISTEN` | `127.0.0.1:8318` |
 | `--auth-file` | `CODEX_AUTH_FILE` | `~/.codex/auth.json` |
 | `--api-key` | `CODEX_AUTH_BROKER_API_KEY` | empty |
 | `--api-key-file` | `CODEX_AUTH_BROKER_API_KEY_FILE` | empty |
