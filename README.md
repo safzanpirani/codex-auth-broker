@@ -23,6 +23,7 @@ internet.
 - Supports streaming and non-streaming Responses clients.
 - Normalizes Factory model names like `gpt-5.5(medium)`.
 - Preserves or injects `prompt_cache_key` for model-side prompt caching.
+- Strips OpenAI SDK compatibility fields that the Codex backend rejects.
 - Never returns a refresh token to Factory Droid or remote clients.
 
 ## Why This Exists
@@ -116,13 +117,9 @@ By default:
 prompt_cache_key = factory-droid
 ```
 
-To request longer cache retention where supported:
-
-```bash
-./codex-auth-broker serve \
-  --listen 127.0.0.1:8317 \
-  --prompt-cache-retention 24h
-```
+Factory Droid `0.122` can send `prompt_cache_retention: "24h"` through the
+OpenAI SDK path. The Codex backend currently rejects that request field, so the
+proxy strips it and relies on `prompt_cache_key` for cache affinity.
 
 Cache hits are visible in Responses usage as:
 
@@ -199,7 +196,7 @@ Flags and equivalent environment variables:
 | `--api-key` | `CODEX_AUTH_BROKER_API_KEY` | empty |
 | `--api-key-file` | `CODEX_AUTH_BROKER_API_KEY_FILE` | empty |
 | `--prompt-cache-key` | `CODEX_AUTH_BROKER_PROMPT_CACHE_KEY` | `factory-droid` |
-| `--prompt-cache-retention` | `CODEX_AUTH_BROKER_PROMPT_CACHE_RETENTION` | empty |
+| `--prompt-cache-retention` | `CODEX_AUTH_BROKER_PROMPT_CACHE_RETENTION` | accepted for compatibility but not forwarded |
 | `--models` | `CODEX_AUTH_BROKER_MODELS` | built-in GPT list |
 | `--refresh-skew` | `CODEX_AUTH_BROKER_REFRESH_SKEW` | `10m` |
 | `--timeout` | none | `10m` |
@@ -234,4 +231,3 @@ gofmt -w *.go
 go test ./...
 go build -o codex-auth-broker .
 ```
-

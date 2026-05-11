@@ -32,8 +32,10 @@ Compatibility normalizations:
 - Missing `instructions` gets a compact default.
 - Missing `store` becomes `false`.
 - Missing `include` becomes `["reasoning.encrypted_content"]`.
-- `max_output_tokens` and `max_completion_tokens` are stripped because the
-  Codex backend rejects them.
+- `max_output_tokens`, `max_completion_tokens`, `maxOutputTokens`,
+  `prompt_cache_retention`, `stream_options`, `user`, `service_tier`, and
+  related OpenAI SDK compatibility fields are stripped because the Codex
+  backend rejects them.
 - Non-streaming requests are implemented by forcing upstream streaming and
   aggregating the final SSE response.
 
@@ -41,4 +43,3 @@ Compatibility normalizations:
 
 Returns HTTP 501. Factory Droid uses `/v1/responses`; Chat Completions support
 should only be added when a real client requires it.
-

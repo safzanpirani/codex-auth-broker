@@ -116,10 +116,17 @@ func (p *responsesProxy) handleResponses(w http.ResponseWriter, r *http.Request)
 	defer resp.Body.Close()
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		responseBody, _ := io.ReadAll(io.LimitReader(resp.Body, 64*1024))
+		log.Printf("upstream responses error status=%d model=%s body_len=%d body=%q request_shape=%s",
+			resp.StatusCode, info.NormalizedModel, len(responseBody),
+			redactTokenLikeText(string(responseBody)), requestShape(upstreamBody))
+		if len(bytes.TrimSpace(responseBody)) == 0 {
+			writeProxyError(w, resp.StatusCode, fmt.Sprintf("upstream returned %d with an empty body", resp.StatusCode))
+			return
+		}
 		copyResponseHeaders(w, resp.Header, info.Stream)
 		w.WriteHeader(resp.StatusCode)
-		body, _ := io.ReadAll(io.LimitReader(resp.Body, 64*1024))
-		_, _ = w.Write([]byte(redactTokenLikeText(string(body))))
+		_, _ = w.Write([]byte(redactTokenLikeText(string(responseBody))))
 		return
 	}
 	if !info.Stream {
@@ -211,12 +218,6 @@ func normalizeResponsesBody(body map[string]any, cfg config, r *http.Request) re
 		body["prompt_cache_key"] = key
 		info.PromptCacheKeySet = true
 	}
-	if current := stringField(body, "prompt_cache_retention"); current != "" {
-		info.PromptCacheRetentionSet = true
-	} else if retention := strings.TrimSpace(cfg.promptCacheRetention); retention != "" {
-		body["prompt_cache_retention"] = retention
-		info.PromptCacheRetentionSet = true
-	}
 	if stream, ok := body["stream"].(bool); ok {
 		info.Stream = stream
 	}
@@ -304,6 +305,156 @@ func normalizeInput(body map[string]any) {
 func removeUnsupportedParams(body map[string]any) {
 	delete(body, "max_output_tokens")
 	delete(body, "max_completion_tokens")
+	delete(body, "maxOutputTokens")
+	delete(body, "maxCompletionTokens")
+	delete(body, "prompt_cache_retention")
+	delete(body, "promptCacheRetention")
+	delete(body, "stream_options")
+	delete(body, "streamOptions")
+	delete(body, "user")
+	delete(body, "safety_identifier")
+	delete(body, "safetyIdentifier")
+	delete(body, "service_tier")
+	delete(body, "serviceTier")
+	delete(body, "logprobs")
+	delete(body, "top_logprobs")
+	delete(body, "topLogprobs")
+}
+
+func requestShape(body map[string]any) string {
+	keys := make([]string, 0, len(body))
+	for key := range body {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	shape := map[string]any{"keys": keys}
+	for _, key := range []string{
+		"model",
+		"stream",
+		"store",
+		"tool_choice",
+		"parallel_tool_calls",
+		"truncation",
+		"prompt_cache_key",
+		"prompt_cache_retention",
+	} {
+		if value, ok := body[key]; ok {
+			shape[key] = summarizeValue(value)
+		}
+	}
+	if reasoning, ok := body["reasoning"].(map[string]any); ok {
+		shape["reasoning"] = summarizeMap(reasoning)
+	}
+	if text, ok := body["text"].(map[string]any); ok {
+		shape["text"] = summarizeMap(text)
+	}
+	if include, ok := body["include"].([]any); ok {
+		shape["include_len"] = len(include)
+		shape["include"] = summarizeList(include, 8)
+	}
+	if tools, ok := body["tools"].([]any); ok {
+		shape["tools_len"] = len(tools)
+		shape["tools"] = summarizeTools(tools)
+		if len(tools) > 0 {
+			shape["first_tool"] = summarizeValue(tools[0])
+		}
+	}
+	if input, ok := body["input"].([]any); ok {
+		shape["input_len"] = len(input)
+		if len(input) > 0 {
+			shape["first_input"] = summarizeValue(input[0])
+		}
+	}
+	encoded, err := json.Marshal(shape)
+	if err != nil {
+		return "{}"
+	}
+	return string(encoded)
+}
+
+func summarizeMap(m map[string]any) map[string]any {
+	out := make(map[string]any, len(m))
+	keys := make([]string, 0, len(m))
+	for key := range m {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	for _, key := range keys {
+		switch key {
+		case "text", "instructions", "content", "input":
+			out[key] = "[redacted]"
+		default:
+			out[key] = summarizeValue(m[key])
+		}
+	}
+	return out
+}
+
+func summarizeList(values []any, max int) []any {
+	limit := len(values)
+	if limit > max {
+		limit = max
+	}
+	out := make([]any, 0, limit)
+	for _, value := range values[:limit] {
+		out = append(out, summarizeValue(value))
+	}
+	return out
+}
+
+func summarizeTools(tools []any) []any {
+	out := make([]any, 0, len(tools))
+	for _, tool := range tools {
+		toolMap, ok := tool.(map[string]any)
+		if !ok {
+			out = append(out, summarizeValue(tool))
+			continue
+		}
+		summary := map[string]any{
+			"type": stringField(toolMap, "type"),
+			"name": stringField(toolMap, "name"),
+		}
+		if params, ok := toolMap["parameters"].(map[string]any); ok {
+			summary["parameter_keys"] = sortedMapKeys(params)
+			if properties, ok := params["properties"].(map[string]any); ok {
+				summary["property_keys"] = sortedMapKeys(properties)
+			}
+		}
+		out = append(out, summary)
+	}
+	return out
+}
+
+func summarizeValue(value any) any {
+	switch v := value.(type) {
+	case string:
+		if len(v) > 80 {
+			return fmt.Sprintf("[string len=%d]", len(v))
+		}
+		return v
+	case bool, nil, json.Number:
+		return v
+	case float64, int, int64:
+		return v
+	case map[string]any:
+		return summarizeMap(v)
+	case []any:
+		return map[string]any{
+			"len":   len(v),
+			"items": summarizeList(v, 4),
+		}
+	default:
+		return fmt.Sprintf("[%T]", value)
+	}
+}
+
+func sortedMapKeys(m map[string]any) []string {
+	keys := make([]string, 0, len(m))
+	for key := range m {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	return keys
 }
 
 func requestID(r *http.Request, body map[string]any) string {

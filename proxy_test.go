@@ -29,11 +29,16 @@ func TestNormalizeFactoryModel(t *testing.T) {
 
 func TestNormalizeResponsesBodyFactoryDefaults(t *testing.T) {
 	body := map[string]any{
-		"model":                 "gpt-5.5(high)",
-		"input":                 "hello",
-		"stream":                true,
-		"max_output_tokens":     json.Number("32"),
-		"max_completion_tokens": json.Number("32"),
+		"model":                  "gpt-5.5(high)",
+		"input":                  "hello",
+		"stream":                 true,
+		"max_output_tokens":      json.Number("32"),
+		"max_completion_tokens":  json.Number("32"),
+		"maxOutputTokens":        json.Number("32"),
+		"stream_options":         map[string]any{"include_usage": true},
+		"user":                   "factory-user",
+		"service_tier":           "auto",
+		"prompt_cache_retention": "24h",
 	}
 	req := httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
 	info := normalizeResponsesBody(body, config{
@@ -51,18 +56,23 @@ func TestNormalizeResponsesBodyFactoryDefaults(t *testing.T) {
 	if body["prompt_cache_key"] != "factory-droid" {
 		t.Fatalf("prompt_cache_key = %#v, want factory-droid", body["prompt_cache_key"])
 	}
-	if body["prompt_cache_retention"] != "24h" {
-		t.Fatalf("prompt_cache_retention = %#v, want 24h", body["prompt_cache_retention"])
+	if _, ok := body["prompt_cache_retention"]; ok {
+		t.Fatal("prompt_cache_retention should be stripped")
 	}
 	if _, ok := body["max_output_tokens"]; ok {
 		t.Fatal("max_output_tokens should be stripped")
+	}
+	for _, key := range []string{"max_completion_tokens", "maxOutputTokens", "stream_options", "user", "service_tier"} {
+		if _, ok := body[key]; ok {
+			t.Fatalf("%s should be stripped", key)
+		}
 	}
 	input := body["input"].([]any)
 	first := input[0].(map[string]any)
 	if first["role"] != "user" {
 		t.Fatalf("input role = %#v, want user", first["role"])
 	}
-	if !info.Stream || !info.PromptCacheKeySet || !info.PromptCacheRetentionSet {
+	if !info.Stream || !info.PromptCacheKeySet || info.PromptCacheRetentionSet {
 		t.Fatalf("unexpected info: %#v", info)
 	}
 }

@@ -14,6 +14,11 @@ provider: openai
 The proxy implements `/v1/responses`, which is the path Factory uses for the
 OpenAI custom-provider flow.
 
+Factory Droid `0.122` sends a few OpenAI SDK fields that the Codex backend
+does not accept directly, including `prompt_cache_retention`. The proxy strips
+those fields while preserving `prompt_cache_key`, so BYOK requests keep working
+and still get model-side prompt-cache affinity.
+
 ## Recommended Models
 
 ```text
@@ -34,4 +39,3 @@ second identical-prefix call should show a large cached-token count.
 ```bash
 node scripts/cache-check.js
 ```
-
