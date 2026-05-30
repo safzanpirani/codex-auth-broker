@@ -27,6 +27,7 @@ type requestLogEntry struct {
 	Model                   string `json:"model,omitempty"`
 	NormalizedModel         string `json:"normalized_model,omitempty"`
 	ReasoningEffort         string `json:"reasoning_effort,omitempty"`
+	ServiceTier             string `json:"service_tier,omitempty"`
 	Stream                  bool   `json:"stream"`
 	Status                  int    `json:"status"`
 	UpstreamStatus          int    `json:"upstream_status,omitempty"`
@@ -158,6 +159,7 @@ func (l *pendingRequestLog) markRequest(body map[string]any, info requestInfo, r
 	l.Entry.Model = info.Model
 	l.Entry.NormalizedModel = info.NormalizedModel
 	l.Entry.ReasoningEffort = info.ReasoningEffort
+	l.Entry.ServiceTier = info.ServiceTier
 	l.Entry.Stream = info.Stream
 	l.Entry.PromptCacheKeySet = info.PromptCacheKeySet
 	l.Entry.PromptCacheRetentionSet = info.PromptCacheRetentionSet

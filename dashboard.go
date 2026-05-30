@@ -540,6 +540,7 @@ const dashboardHTML = `<!doctype html>
     .badge.effort-medium { color: var(--info); border-color: #1d3556; background: #0a1322; }
     .badge.effort-high { color: var(--warn); border-color: #4a3a18; background: #1a1408; }
     .badge.effort-xhigh { color: var(--bad); border-color: #4d2126; background: #1a0c0e; }
+    .badge.tier-priority { color: var(--warn); border-color: #4a3a18; background: #1a1408; }
     .badge.cache { color: var(--accent); border-color: #1f4031; background: #0e1a14; }
 
     .detail {
@@ -956,6 +957,9 @@ const dashboardHTML = `<!doctype html>
         const effort = req.reasoning_effort
           ? '<span class="badge effort-' + escapeHTML(req.reasoning_effort) + '">' + escapeHTML(req.reasoning_effort) + '</span>'
           : '<span class="muted">—</span>';
+        const tier = req.service_tier
+          ? '<div class="detail"><span class="badge tier-' + escapeHTML(req.service_tier) + '">' + escapeHTML(req.service_tier) + '</span></div>'
+          : '';
         const stream = req.stream
           ? '<span class="badge stream">stream</span>'
           : '<span class="muted">—</span>';
@@ -988,6 +992,7 @@ const dashboardHTML = `<!doctype html>
           tool_count: req.tool_count,
           prompt_cache_key_set: req.prompt_cache_key_set,
           prompt_cache_retention_set: req.prompt_cache_retention_set,
+          service_tier: req.service_tier,
           request_id: req.request_id,
           client: req.client
         };
@@ -996,7 +1001,7 @@ const dashboardHTML = `<!doctype html>
           '<td class="col-time mono">' + fmtTime(req.started_at) + '</td>' +
           '<td class="col-status"><span class="status ' + statusClass(status) + '">' + (status || "—") + '</span>' + upstreamHint + '</td>' +
           '<td class="col-model">' + modelLine + '</td>' +
-          '<td class="col-effort">' + effort + '</td>' +
+          '<td class="col-effort">' + effort + tier + '</td>' +
           '<td class="col-stream">' + stream + '</td>' +
           '<td class="col-dur mono">' + fmtMS(req.duration_ms) + '</td>' +
           '<td class="col-tokens">' + tokens + '</td>' +
