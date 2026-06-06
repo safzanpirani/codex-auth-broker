@@ -490,9 +490,9 @@ const dashboardHTML = `<!doctype html>
       }
 
       function usageColor(used) {
-        if (used >= 90) return "var(--bad)";
-        if (used >= 70) return "var(--warn)";
-        return "var(--accent)";
+        if (used >= 90) return "var(--red)";
+        if (used >= 70) return "var(--yellow)";
+        return "var(--green)";
       }
 
       function usageKind(used) {
