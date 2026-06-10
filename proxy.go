@@ -27,6 +27,7 @@ type requestInfo struct {
 	Model                   string
 	NormalizedModel         string
 	ReasoningEffort         string
+	ServiceTier             string
 	Stream                  bool
 	PromptCacheKeySet       bool
 	PromptCacheRetentionSet bool
@@ -78,8 +79,8 @@ func (p *responsesProxy) handleResponses(w http.ResponseWriter, r *http.Request)
 	}
 	info := normalizeResponsesBody(body, p.cfg, r)
 	logEntry.markRequest(body, info, r)
-	log.Printf("responses request model=%s normalized=%s stream=%t prompt_cache_key=%t prompt_cache_retention=%t",
-		info.Model, info.NormalizedModel, info.Stream, info.PromptCacheKeySet, info.PromptCacheRetentionSet)
+	log.Printf("responses request model=%s normalized=%s service_tier=%s stream=%t prompt_cache_key=%t prompt_cache_retention=%t",
+		info.Model, info.NormalizedModel, info.ServiceTier, info.Stream, info.PromptCacheKeySet, info.PromptCacheRetentionSet)
 
 	upstreamBody := body
 	if !info.Stream {
@@ -218,6 +219,7 @@ func normalizeResponsesBody(body map[string]any, cfg config, r *http.Request) re
 	if stringField(body, "prompt_cache_retention") != "" || stringField(body, "promptCacheRetention") != "" {
 		info.PromptCacheRetentionSet = true
 	}
+	info.ServiceTier = normalizeServiceTier(body)
 	if _, ok := body["store"]; !ok {
 		body["store"] = false
 	}
@@ -323,6 +325,23 @@ func reasoningEffortFromBody(body map[string]any) string {
 	return strings.TrimSpace(effort)
 }
 
+func normalizeServiceTier(body map[string]any) string {
+	raw := stringField(body, "service_tier")
+	if raw == "" {
+		raw = stringField(body, "serviceTier")
+	}
+	normalized := strings.ToLower(strings.TrimSpace(raw))
+	switch normalized {
+	case "auto", "default", "priority":
+		body["service_tier"] = normalized
+	default:
+		normalized = ""
+		delete(body, "service_tier")
+	}
+	delete(body, "serviceTier")
+	return normalized
+}
+
 func normalizeInput(body map[string]any) {
 	switch input := body["input"].(type) {
 	case string:
@@ -354,8 +373,6 @@ func removeUnsupportedParams(body map[string]any) {
 	delete(body, "user")
 	delete(body, "safety_identifier")
 	delete(body, "safetyIdentifier")
-	delete(body, "service_tier")
-	delete(body, "serviceTier")
 	delete(body, "logprobs")
 	delete(body, "top_logprobs")
 	delete(body, "topLogprobs")
@@ -377,6 +394,7 @@ func requestShape(body map[string]any) string {
 		"truncation",
 		"prompt_cache_key",
 		"prompt_cache_retention",
+		"service_tier",
 	} {
 		if value, ok := body[key]; ok {
 			shape[key] = summarizeValue(value)

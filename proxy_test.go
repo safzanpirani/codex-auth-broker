@@ -62,10 +62,13 @@ func TestNormalizeResponsesBodyFactoryDefaults(t *testing.T) {
 	if _, ok := body["max_output_tokens"]; ok {
 		t.Fatal("max_output_tokens should be stripped")
 	}
-	for _, key := range []string{"max_completion_tokens", "maxOutputTokens", "stream_options", "user", "service_tier"} {
+	for _, key := range []string{"max_completion_tokens", "maxOutputTokens", "stream_options", "user"} {
 		if _, ok := body[key]; ok {
 			t.Fatalf("%s should be stripped", key)
 		}
+	}
+	if body["service_tier"] != "auto" {
+		t.Fatalf("service_tier = %#v, want auto", body["service_tier"])
 	}
 	input := body["input"].([]any)
 	first := input[0].(map[string]any)
@@ -74,6 +77,39 @@ func TestNormalizeResponsesBodyFactoryDefaults(t *testing.T) {
 	}
 	if !info.Stream || !info.PromptCacheKeySet || !info.PromptCacheRetentionSet {
 		t.Fatalf("unexpected info: %#v", info)
+	}
+	if info.ServiceTier != "auto" {
+		t.Fatalf("ServiceTier = %#v, want auto", info.ServiceTier)
+	}
+}
+
+func TestNormalizeResponsesBodyServiceTier(t *testing.T) {
+	req := httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
+	body := map[string]any{
+		"model":       "gpt-5.5",
+		"serviceTier": "priority",
+	}
+	info := normalizeResponsesBody(body, config{}, req)
+	if info.ServiceTier != "priority" {
+		t.Fatalf("ServiceTier = %#v, want priority", info.ServiceTier)
+	}
+	if body["service_tier"] != "priority" {
+		t.Fatalf("service_tier = %#v, want priority", body["service_tier"])
+	}
+	if _, ok := body["serviceTier"]; ok {
+		t.Fatal("serviceTier should be normalized away")
+	}
+
+	body = map[string]any{
+		"model":        "gpt-5.5",
+		"service_tier": "expensive",
+	}
+	info = normalizeResponsesBody(body, config{}, req)
+	if info.ServiceTier != "" {
+		t.Fatalf("ServiceTier = %#v, want empty", info.ServiceTier)
+	}
+	if _, ok := body["service_tier"]; ok {
+		t.Fatal("invalid service_tier should be stripped")
 	}
 }
 
