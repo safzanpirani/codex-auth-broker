@@ -14,32 +14,35 @@ type requestLogStore struct {
 	limit   int
 	nextID  int64
 	entries []requestLogEntry
+	pricing map[string]modelPricing
+	persist *requestLogFile
 }
 
 type requestLogEntry struct {
-	ID                      int64  `json:"id"`
-	StartedAt               string `json:"started_at"`
-	DurationMS              int64  `json:"duration_ms"`
-	Method                  string `json:"method"`
-	Path                    string `json:"path"`
-	Client                  string `json:"client,omitempty"`
-	RequestID               string `json:"request_id,omitempty"`
-	Model                   string `json:"model,omitempty"`
-	NormalizedModel         string `json:"normalized_model,omitempty"`
-	ReasoningEffort         string `json:"reasoning_effort,omitempty"`
-	ServiceTier             string `json:"service_tier,omitempty"`
-	Stream                  bool   `json:"stream"`
-	Status                  int    `json:"status"`
-	UpstreamStatus          int    `json:"upstream_status,omitempty"`
-	Error                   string `json:"error,omitempty"`
-	PromptCacheKeySet       bool   `json:"prompt_cache_key_set"`
-	PromptCacheRetentionSet bool   `json:"prompt_cache_retention_set"`
-	InputCount              int    `json:"input_count,omitempty"`
-	ToolCount               int    `json:"tool_count,omitempty"`
-	InputTokens             *int64 `json:"input_tokens,omitempty"`
-	OutputTokens            *int64 `json:"output_tokens,omitempty"`
-	CachedTokens            *int64 `json:"cached_tokens,omitempty"`
-	TotalTokens             *int64 `json:"total_tokens,omitempty"`
+	ID                      int64    `json:"id"`
+	StartedAt               string   `json:"started_at"`
+	DurationMS              int64    `json:"duration_ms"`
+	Method                  string   `json:"method"`
+	Path                    string   `json:"path"`
+	Client                  string   `json:"client,omitempty"`
+	RequestID               string   `json:"request_id,omitempty"`
+	Model                   string   `json:"model,omitempty"`
+	NormalizedModel         string   `json:"normalized_model,omitempty"`
+	ReasoningEffort         string   `json:"reasoning_effort,omitempty"`
+	ServiceTier             string   `json:"service_tier,omitempty"`
+	Stream                  bool     `json:"stream"`
+	Status                  int      `json:"status"`
+	UpstreamStatus          int      `json:"upstream_status,omitempty"`
+	Error                   string   `json:"error,omitempty"`
+	PromptCacheKeySet       bool     `json:"prompt_cache_key_set"`
+	PromptCacheRetentionSet bool     `json:"prompt_cache_retention_set"`
+	InputCount              int      `json:"input_count,omitempty"`
+	ToolCount               int      `json:"tool_count,omitempty"`
+	InputTokens             *int64   `json:"input_tokens,omitempty"`
+	OutputTokens            *int64   `json:"output_tokens,omitempty"`
+	CachedTokens            *int64   `json:"cached_tokens,omitempty"`
+	TotalTokens             *int64   `json:"total_tokens,omitempty"`
+	CostUSD                 *float64 `json:"cost_usd,omitempty"`
 }
 
 type pendingRequestLog struct {
@@ -50,6 +53,7 @@ type pendingRequestLog struct {
 
 type requestLogSnapshot struct {
 	Limit         int               `json:"limit"`
+	PersistPath   string            `json:"persist_path,omitempty"`
 	Retained      int               `json:"retained"`
 	TotalSeen     int64             `json:"total_seen"`
 	RequestLog    []requestLogEntry `json:"requests"`
@@ -72,10 +76,28 @@ func (s *requestLogStore) add(entry requestLogEntry) {
 	defer s.mu.Unlock()
 	s.nextID++
 	entry.ID = s.nextID
+	s.persist.append(entry)
 	s.entries = append(s.entries, entry)
 	if extra := len(s.entries) - s.limit; extra > 0 {
 		copy(s.entries, s.entries[extra:])
 		s.entries = s.entries[:s.limit]
+	}
+}
+
+// restore seeds the store from a persisted request log so the dashboard
+// survives broker restarts.
+func (s *requestLogStore) restore(entries []requestLogEntry, maxID int64) {
+	if s == nil || s.limit == 0 || len(entries) == 0 {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if extra := len(entries) - s.limit; extra > 0 {
+		entries = entries[extra:]
+	}
+	s.entries = append(s.entries, entries...)
+	if maxID > s.nextID {
+		s.nextID = maxID
 	}
 }
 
@@ -95,8 +117,13 @@ func (s *requestLogStore) snapshot(limit int) requestLogSnapshot {
 	for i := len(s.entries) - 1; i >= 0 && len(requests) < limit; i-- {
 		requests = append(requests, s.entries[i])
 	}
+	persistPath := ""
+	if s.persist != nil {
+		persistPath = s.persist.path
+	}
 	return requestLogSnapshot{
 		Limit:         s.limit,
+		PersistPath:   persistPath,
 		Retained:      len(s.entries),
 		TotalSeen:     s.nextID,
 		RequestLog:    requests,
@@ -141,6 +168,13 @@ func (l *pendingRequestLog) finish() {
 	}
 	l.Entry.DurationMS = time.Since(l.started).Milliseconds()
 	l.Entry.Error = truncateLogField(redactTokenLikeText(l.Entry.Error), 300)
+	model := valueOr(l.Entry.NormalizedModel, l.Entry.Model)
+	l.Entry.CostUSD = estimateCostUSD(l.store.pricing, model, tokenUsage{
+		InputTokens:  l.Entry.InputTokens,
+		OutputTokens: l.Entry.OutputTokens,
+		CachedTokens: l.Entry.CachedTokens,
+		TotalTokens:  l.Entry.TotalTokens,
+	})
 	l.store.add(l.Entry)
 }
 
@@ -221,4 +255,4 @@ func requestLimitFromQuery(r *http.Request, fallback int) int {
 	return parsed
 }
 
-const requestLogRedactionNote = "request bodies, prompt text, response text, bearer tokens, and refresh tokens are never stored"
+const requestLogRedactionNote = "request bodies, prompt text, response text, bearer tokens, and refresh tokens are never stored, in memory or on disk"

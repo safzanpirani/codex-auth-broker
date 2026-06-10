@@ -200,7 +200,7 @@ const dashboardHTML = `<!doctype html>
     .dditem:hover{background:var(--crust);color:var(--text);}
     .dditem.on{color:var(--text);} .dditem.on .sw{background:var(--accent);}
 
-    .kpi-grid{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:8px;}
+    .kpi-grid{display:grid;grid-template-columns:repeat(6,minmax(0,1fr));gap:8px;}
     .kpi{border:1px solid var(--s1);background:var(--mantle);padding:10px 12px;display:grid;gap:2px;align-content:start;}
     .kpi span{color:var(--ov0);font-size:.6rem;text-transform:uppercase;letter-spacing:.08em;font-family:var(--font-label);}
     .kpi strong{font-family:var(--font-head);font-size:1.35rem;font-weight:700;color:var(--text);}
@@ -240,7 +240,7 @@ const dashboardHTML = `<!doctype html>
     tbody tr:hover td,tbody tr:nth-child(2n):hover td{background:var(--s0);}
     .col-time{width:86px;} .col-status{width:64px;} .col-model{width:22%;}
     .col-effort{width:70px;} .col-stream{width:70px;} .col-dur{width:78px;}
-    .col-tokens{width:130px;} .col-cache{width:140px;}
+    .col-tokens{width:130px;} .col-cost{width:84px;} .col-cache{width:140px;}
 
     .status{display:inline-flex;min-width:38px;justify-content:center;padding:1px 6px;font-family:var(--font-data);font-size:.66rem;font-weight:600;border:1px solid var(--s0);background:var(--crust);color:var(--sub0);}
     .status.s2{color:var(--green);border-color:var(--s1);}
@@ -308,7 +308,7 @@ const dashboardHTML = `<!doctype html>
         </div>
         <p class="footnote">Stored in this browser session only — never sent upstream.</p>
       </form>
-      <p class="footnote">Request history holds metadata only. No prompts, completions, bearer tokens, or refresh tokens are logged or shown.</p>
+      <p class="footnote">Request history holds metadata only — in memory and in the optional JSONL log. No prompts, completions, bearer tokens, or refresh tokens are stored or shown. Costs are API-equivalent estimates.</p>
     </aside>
 
     <main id="main-content">
@@ -326,6 +326,7 @@ const dashboardHTML = `<!doctype html>
               <button class="ddbtn" id="themeBtn" type="button" aria-label="Theme"><span class="sw"></span><span id="themeLabel">mocha</span><span class="caret">▼</span></button>
               <div class="ddmenu" id="themeMenu" hidden></div>
             </div>
+          </div>
         </div>
       </header>
 
@@ -334,6 +335,7 @@ const dashboardHTML = `<!doctype html>
         <div class="kpi"><span>Success</span><strong id="kpiSuccess">—</strong><em id="kpiSuccessSub">no requests</em></div>
         <div class="kpi"><span>Median</span><strong id="kpiLatency">—</strong><em id="kpiLatencySub">visible window</em></div>
         <div class="kpi"><span>Tokens</span><strong id="kpiTokens">0</strong><em id="kpiTokensSub">in + out</em></div>
+        <div class="kpi"><span>Est. cost</span><strong id="kpiCost">—</strong><em id="kpiCostSub">API-equivalent</em></div>
         <div class="kpi"><span>Cache hit</span><strong id="kpiCache">—</strong><em id="kpiCacheSub">of input tokens</em></div>
       </section>
 
@@ -383,12 +385,13 @@ const dashboardHTML = `<!doctype html>
                 <th class="col-stream">Stream</th>
                 <th class="col-dur">Duration</th>
                 <th class="col-tokens">Tokens (in / out)</th>
+                <th class="col-cost">Cost</th>
                 <th class="col-cache">Cache</th>
                 <th>Request / Error</th>
               </tr>
             </thead>
             <tbody id="requestRows">
-              <tr><td colspan="9" class="empty">No requests yet. Send a request through <span class="mono">/v1/responses</span> to see it here.</td></tr>
+              <tr><td colspan="10" class="empty">No requests yet. Send a request through <span class="mono">/v1/responses</span> to see it here.</td></tr>
             </tbody>
           </table>
         </div>
@@ -464,6 +467,14 @@ const dashboardHTML = `<!doctype html>
         if (value >= 10000) return Math.round(value / 1000) + "k";
         if (value >= 1000) return (value / 1000).toFixed(1) + "k";
         return String(value);
+      }
+
+      function fmtCost(value) {
+        if (value == null) return "—";
+        if (value === 0) return "$0";
+        if (value < 0.01) return "<$0.01";
+        if (value < 1) return "$" + value.toFixed(3);
+        return "$" + value.toFixed(2);
       }
 
       function relTime(epochSeconds) {
@@ -575,7 +586,7 @@ const dashboardHTML = `<!doctype html>
           $("snapshotTime").textContent = fmtTime(snapshot.generated_at);
           renderRequests();
         } catch (err) {
-          $("requestRows").innerHTML = '<tr><td colspan="9" class="empty error">' + escapeHTML(err.message) + '</td></tr>';
+          $("requestRows").innerHTML = '<tr><td colspan="10" class="empty error">' + escapeHTML(err.message) + '</td></tr>';
         }
       }
 
@@ -610,7 +621,7 @@ const dashboardHTML = `<!doctype html>
           const msg = state.requests.length
             ? 'No requests match this filter.'
             : 'No requests yet. Send a request through <span class="mono">/v1/responses</span> to see it here.';
-          $("requestRows").innerHTML = '<tr><td colspan="9" class="empty">' + msg + '</td></tr>';
+          $("requestRows").innerHTML = '<tr><td colspan="10" class="empty">' + msg + '</td></tr>';
           return;
         }
         $("requestRows").innerHTML = rows.map(renderRow).join("");
@@ -645,6 +656,9 @@ const dashboardHTML = `<!doctype html>
           : '<span class="muted">—</span>';
         const tokens = (req.input_tokens != null || req.output_tokens != null)
           ? '<span class="mono">' + fmtTokens(req.input_tokens) + ' / ' + fmtTokens(req.output_tokens) + '</span>'
+          : '<span class="muted">—</span>';
+        const cost = req.cost_usd != null
+          ? '<span class="mono" title="$' + Number(req.cost_usd).toFixed(6) + ' API-equivalent">' + fmtCost(req.cost_usd) + '</span>'
           : '<span class="muted">—</span>';
         const cacheCell = renderCache(req);
         let detail;
@@ -685,6 +699,7 @@ const dashboardHTML = `<!doctype html>
           '<td class="col-stream">' + stream + '</td>' +
           '<td class="col-dur mono">' + fmtMS(req.duration_ms) + '</td>' +
           '<td class="col-tokens">' + tokens + '</td>' +
+          '<td class="col-cost">' + cost + '</td>' +
           '<td class="col-cache">' + cacheCell + '</td>' +
           '<td>' + detail + '</td>' +
         '</tr>';
@@ -721,12 +736,13 @@ const dashboardHTML = `<!doctype html>
           $("kpiTokens").textContent = "0";
           $("kpiTokensSub").textContent = "in + out";
           setKpiKind("kpiTokens", null);
+          setKpi("kpiCost", "—", "no priced requests", null);
           setKpi("kpiCache", "—", "no input tokens", null);
           return;
         }
 
         let errors = 0;
-        let inSum = 0, outSum = 0, cacheSum = 0;
+        let inSum = 0, outSum = 0, cacheSum = 0, costSum = 0, priced = 0;
         const durations = [];
         for (const r of visible) {
           if (isErrorRow(r)) errors++;
@@ -734,6 +750,7 @@ const dashboardHTML = `<!doctype html>
           if (r.input_tokens) inSum += r.input_tokens;
           if (r.output_tokens) outSum += r.output_tokens;
           if (r.cached_tokens) cacheSum += r.cached_tokens;
+          if (r.cost_usd != null) { costSum += r.cost_usd; priced++; }
         }
         const ok = visible.length - errors;
         const rate = (ok / visible.length) * 100;
@@ -757,6 +774,13 @@ const dashboardHTML = `<!doctype html>
         $("kpiTokens").textContent = fmtTokens(inSum + outSum);
         $("kpiTokensSub").textContent = fmtTokens(inSum) + " in · " + fmtTokens(outSum) + " out";
         setKpiKind("kpiTokens", null);
+
+        setKpi(
+          "kpiCost",
+          priced ? fmtCost(costSum) : "—",
+          priced ? priced + " priced · API-equivalent" : "no priced requests",
+          null
+        );
 
         if (inSum > 0) {
           const pct = (cacheSum / inSum) * 100;
@@ -822,12 +846,12 @@ const dashboardHTML = `<!doctype html>
         setPill("refreshPill", state.paused ? "warn" : "ok", state.paused ? "paused" : "auto · 3s");
       });
       $("clearHistory").addEventListener("click", async () => {
-        if (!confirm("Clear in-memory request history?")) return;
+        if (!confirm("Clear in-memory request history? The on-disk JSONL log is kept.")) return;
         try {
           await fetchJSON("/dashboard/api/requests", { method: "DELETE" });
           await loadRequests();
         } catch (err) {
-          $("requestRows").innerHTML = '<tr><td colspan="9" class="empty error">' + escapeHTML(err.message) + '</td></tr>';
+          $("requestRows").innerHTML = '<tr><td colspan="10" class="empty error">' + escapeHTML(err.message) + '</td></tr>';
         }
       });
       $("filter").addEventListener("input", (e) => {

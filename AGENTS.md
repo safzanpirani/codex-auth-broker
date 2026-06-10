@@ -22,9 +22,14 @@ OAuth login, while keeping the real refresh token local.
   stripped before forwarding to the Codex backend.
 - The dashboard is intentionally served by this Go binary. Keep it dependency
   free unless there is a strong reason to add a frontend build step.
-- Dashboard request history must stay in memory only. Do not persist prompt
-  text, completion text, request bodies, bearer keys, access tokens, or refresh
-  tokens.
+- Dashboard request history may be persisted as metadata-only JSONL (see
+  `--request-log-file`). Never persist or log prompt text, completion text,
+  request bodies, bearer keys, access tokens, or refresh tokens — in memory or
+  on disk. Anything written to the persistent log must be a `requestLogEntry`.
+- Per-request cost is an API-equivalent estimate from the pricing table in
+  `pricing.go` (overridable via `CODEX_AUTH_BROKER_PRICING`); ChatGPT-plan
+  traffic is not actually billed per token. Keep the table in sync with the
+  advertised model set.
 - Live Codex usage comes from `GET https://chatgpt.com/backend-api/wham/usage`
   using the local access token and `ChatGPT-Account-Id` header when present.
 - Keep the advertised model set, README model examples, and Factory/Pi docs in
