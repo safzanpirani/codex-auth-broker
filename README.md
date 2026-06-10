@@ -115,6 +115,10 @@ curl -sS http://127.0.0.1:8317/v1/responses \
   }'
 ```
 
+For copy-paste examples covering model ids, reasoning levels, streaming, image
+input, and custom provider configuration, see
+[`docs/responses-api.md`](docs/responses-api.md).
+
 Doctor:
 
 ```bash
@@ -172,11 +176,20 @@ It shows:
 - Status, model normalization, reasoning effort, streaming mode, duration,
   cached tokens, and total tokens. Streaming calls are scanned as they pass
   through so final usage is captured when the upstream SSE includes it.
+- A per-request estimated cost column plus an aggregate cost KPI. Costs are
+  API-equivalent estimates from the built-in pricing table (cached input is
+  priced at the discounted rate); ChatGPT-plan traffic is not actually billed
+  per token. Override prices with `CODEX_AUTH_BROKER_PRICING`, for example
+  `{"gpt-5.5":{"input":5,"cached_input":0.5,"output":30}}` (USD per 1M tokens).
 - Filtering, pause/resume, manual refresh, and clear-history controls.
 
-The request log is in memory only and bounded by `--request-log-limit`.
-It never stores prompt bodies, completion text, bearer tokens, access tokens, or
-refresh tokens.
+The in-memory request log is bounded by `--request-log-limit`. Request
+metadata is also appended as JSONL to `--request-log-file`
+(default `~/.codex-auth-broker/requests.jsonl`, mode 0600; pass an empty value
+to disable). On startup the broker reloads the tail of that file so dashboard
+history survives restarts; the clear-history button only clears memory.
+Neither store ever contains prompt bodies, completion text, bearer tokens,
+access tokens, or refresh tokens.
 
 Dashboard endpoints:
 
@@ -297,6 +310,8 @@ Flags and equivalent environment variables:
 | `--prompt-cache-retention` | `CODEX_AUTH_BROKER_PROMPT_CACHE_RETENTION` | accepted for compatibility but not forwarded |
 | `--usage-url` | `CODEX_AUTH_BROKER_USAGE_URL` | ChatGPT wham usage endpoint |
 | `--request-log-limit` | `CODEX_AUTH_BROKER_REQUEST_LOG_LIMIT` | `1000` |
+| `--request-log-file` | `CODEX_AUTH_BROKER_REQUEST_LOG_FILE` | `~/.codex-auth-broker/requests.jsonl` (empty disables) |
+| n/a | `CODEX_AUTH_BROKER_PRICING` | built-in per-model USD/1M-token table |
 | `--models` | `CODEX_AUTH_BROKER_MODELS` | built-in GPT list |
 | `--refresh-skew` | `CODEX_AUTH_BROKER_REFRESH_SKEW` | `10m` |
 | `--timeout` | none | `10m` |

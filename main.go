@@ -45,6 +45,7 @@ type config struct {
 	models               []string
 	timeout              time.Duration
 	requestLogLimit      int
+	requestLogFile       string
 }
 
 func main() {
@@ -93,10 +94,29 @@ func runServe(args []string) error {
 			Timeout: 30 * time.Second,
 		},
 	}
+	pricing, err := loadModelPricing()
+	if err != nil {
+		return err
+	}
+	requests := newRequestLogStore(cfg.requestLogLimit)
+	requests.pricing = pricing
+	if path := strings.TrimSpace(cfg.requestLogFile); path != "" {
+		restored, maxID, err := loadPersistedEntries(path, cfg.requestLogLimit)
+		if err != nil {
+			return fmt.Errorf("load persisted request log: %w", err)
+		}
+		requests.restore(restored, maxID)
+		persist, err := openRequestLogFile(path)
+		if err != nil {
+			return err
+		}
+		requests.persist = persist
+		log.Printf("persisting request metadata (no prompts or tokens) to %s", persist.path)
+	}
 	proxy := &responsesProxy{
 		cfg:      cfg,
 		auth:     auth,
-		requests: newRequestLogStore(cfg.requestLogLimit),
+		requests: requests,
 		client: &http.Client{
 			Timeout: cfg.timeout,
 		},
@@ -185,6 +205,7 @@ func loadConfig(args []string) (config, error) {
 		models:               defaultModels(),
 		timeout:              defaultHTTPTimeout,
 		requestLogLimit:      defaultRequestLogLimit,
+		requestLogFile:       envOr("CODEX_AUTH_BROKER_REQUEST_LOG_FILE", defaultRequestLogFile()),
 	}
 	if value := strings.TrimSpace(os.Getenv("CODEX_AUTH_BROKER_REFRESH_SKEW")); value != "" {
 		parsed, err := time.ParseDuration(value)
@@ -221,6 +242,7 @@ func loadConfig(args []string) (config, error) {
 	fs.StringVar(&skewValue, "refresh-skew", skewValue, "refresh access token when it expires within this duration")
 	fs.StringVar(&timeoutValue, "timeout", timeoutValue, "upstream request timeout")
 	fs.IntVar(&cfg.requestLogLimit, "request-log-limit", cfg.requestLogLimit, "maximum in-memory dashboard request entries")
+	fs.StringVar(&cfg.requestLogFile, "request-log-file", cfg.requestLogFile, "JSONL file for persistent request metadata; empty disables persistence")
 	fs.Usage = func() { usage(fs.Output()) }
 	if err := fs.Parse(args); err != nil {
 		return cfg, err
@@ -284,6 +306,7 @@ Common flags:
   --prompt-cache-key       Inject prompt_cache_key when clients omit it
   --prompt-cache-retention Inject prompt_cache_retention when clients omit it
   --request-log-limit      In-memory dashboard request history size
+  --request-log-file       JSONL file for persistent request metadata; empty disables
 `)
 }
 

@@ -54,6 +54,14 @@ func defaultAuthFile() string {
 	return filepath.Join(home, ".codex", "auth.json")
 }
 
+func defaultRequestLogFile() string {
+	home, err := os.UserHomeDir()
+	if err != nil || home == "" {
+		return filepath.Join(".codex-auth-broker", "requests.jsonl")
+	}
+	return filepath.Join(home, ".codex-auth-broker", "requests.jsonl")
+}
+
 func expandPath(path string) (string, error) {
 	if path == "" || path[0] != '~' {
 		return path, nil
