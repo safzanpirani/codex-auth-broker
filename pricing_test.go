@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 )
 
 func int64Ptr(v int64) *int64 { return &v }
@@ -77,6 +78,37 @@ func TestRequestLogPersistenceRoundTrip(t *testing.T) {
 	snapshot := restored.snapshot(0)
 	if snapshot.Retained != 2 || snapshot.TotalSeen != 3 {
 		t.Fatalf("restored snapshot retained=%d total=%d, want 2 and 3", snapshot.Retained, snapshot.TotalSeen)
+	}
+}
+
+func TestCostSummaryWindows(t *testing.T) {
+	now := time.Date(2026, 6, 11, 12, 0, 0, 0, time.UTC)
+	cost := 0.5
+	persist, err := openRequestLogFile(filepath.Join(t.TempDir(), "requests.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	store := newRequestLogStore(10)
+	store.persist = persist
+	old := requestLogEntry{StartedAt: now.Add(-48 * time.Hour).Format(time.RFC3339Nano), NormalizedModel: "gpt-5.5", CostUSD: &cost, InputTokens: int64Ptr(100)}
+	recent := requestLogEntry{StartedAt: now.Add(-time.Hour).Format(time.RFC3339Nano), NormalizedModel: "gpt-5.4", CostUSD: &cost, InputTokens: int64Ptr(200)}
+	store.add(old)
+	store.add(recent)
+
+	summary, err := store.costSummary(now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if summary.Source != "file" {
+		t.Fatalf("source = %s, want file", summary.Source)
+	}
+	day := summary.Windows["24h"]
+	if day.Requests != 1 || math.Abs(day.CostUSD-0.5) > 1e-9 || day.InputTokens != 200 {
+		t.Fatalf("24h window = %+v, want 1 request / $0.5 / 200 input tokens", day)
+	}
+	all := summary.Windows["all"]
+	if all.Requests != 2 || math.Abs(all.CostUSD-1.0) > 1e-9 || len(all.Models) != 2 {
+		t.Fatalf("all window = %+v, want 2 requests / $1.0 / 2 models", all)
 	}
 }
 

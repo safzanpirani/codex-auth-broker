@@ -43,25 +43,22 @@ func (f *requestLogFile) append(entry requestLogEntry) {
 	_, _ = f.file.Write(append(encoded, '\n'))
 }
 
-// loadPersistedEntries streams the JSONL file and returns the last limit
-// entries plus the highest ID seen, so in-memory history and ID numbering
-// survive restarts. Malformed lines are skipped.
-func loadPersistedEntries(path string, limit int) ([]requestLogEntry, int64, error) {
+// scanPersistedEntries streams the JSONL file and calls fn for each parsed
+// entry. Malformed lines are skipped; a missing file is not an error.
+func scanPersistedEntries(path string, fn func(requestLogEntry)) error {
 	expanded, err := expandPath(path)
 	if err != nil {
-		return nil, 0, err
+		return err
 	}
 	file, err := os.Open(expanded)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return nil, 0, nil
+			return nil
 		}
-		return nil, 0, err
+		return err
 	}
 	defer file.Close()
 
-	var entries []requestLogEntry
-	var maxID int64
 	scanner := bufio.NewScanner(file)
 	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
 	for scanner.Scan() {
@@ -69,6 +66,17 @@ func loadPersistedEntries(path string, limit int) ([]requestLogEntry, int64, err
 		if err := json.Unmarshal(scanner.Bytes(), &entry); err != nil {
 			continue
 		}
+		fn(entry)
+	}
+	return scanner.Err()
+}
+
+// loadPersistedEntries returns the last limit entries plus the highest ID
+// seen, so in-memory history and ID numbering survive restarts.
+func loadPersistedEntries(path string, limit int) ([]requestLogEntry, int64, error) {
+	var entries []requestLogEntry
+	var maxID int64
+	err := scanPersistedEntries(path, func(entry requestLogEntry) {
 		if entry.ID > maxID {
 			maxID = entry.ID
 		}
@@ -77,8 +85,8 @@ func loadPersistedEntries(path string, limit int) ([]requestLogEntry, int64, err
 			copy(entries, entries[1:])
 			entries = entries[:limit]
 		}
-	}
-	if err := scanner.Err(); err != nil {
+	})
+	if err != nil {
 		return nil, 0, err
 	}
 	return entries, maxID, nil

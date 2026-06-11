@@ -127,6 +127,7 @@ func runServe(args []string) error {
 	mux.HandleFunc("GET /dashboard", proxy.handleDashboard)
 	mux.HandleFunc("GET /dashboard/api/requests", proxy.handleDashboardRequests)
 	mux.HandleFunc("DELETE /dashboard/api/requests", proxy.handleDashboardRequests)
+	mux.HandleFunc("GET /dashboard/api/costs", proxy.handleDashboardCosts)
 	mux.HandleFunc("GET /dashboard/api/usage", proxy.handleCodexUsage)
 	mux.HandleFunc("GET /usage", proxy.handleCodexUsage)
 	mux.HandleFunc("GET /healthz", proxy.handleHealth)

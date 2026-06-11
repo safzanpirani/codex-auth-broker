@@ -224,6 +224,15 @@ const dashboardHTML = `<!doctype html>
     .bar i{position:absolute;top:-3px;bottom:-3px;width:2px;background:var(--text);opacity:.7;left:0%;transition:left 220ms ease;}
     .usage-meta{display:flex;justify-content:space-between;gap:12px;font-size:.68rem;color:var(--ov0);font-family:var(--font-label);}
 
+    .cost-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:8px;}
+    .cost-cell{border:1px solid var(--s0);background:var(--crust);padding:9px 11px;display:grid;gap:2px;align-content:start;}
+    .cost-cell span{color:var(--ov0);font-size:.6rem;text-transform:uppercase;letter-spacing:.08em;font-family:var(--font-label);}
+    .cost-cell strong{font-family:var(--font-head);font-size:1.15rem;font-weight:700;color:var(--text);}
+    .cost-cell em{font-style:normal;color:var(--ov0);font-size:.64rem;font-family:var(--font-label);}
+    .cost-models{margin:10px 0 0;padding:0;list-style:none;display:grid;gap:3px;}
+    .cost-models li{display:flex;justify-content:space-between;gap:12px;font-size:.68rem;font-family:var(--font-label);color:var(--sub0);}
+    .cost-models li b{font-weight:400;color:var(--sub1);font-family:var(--font-data);}
+
     .toolbar{display:grid;grid-template-columns:auto minmax(160px,280px) auto;gap:8px;align-items:center;}
     .chips{display:inline-flex;gap:0;border:1px solid var(--s1);overflow:hidden;}
     .chip{border:0;background:transparent;color:var(--ov0);padding:5px 11px;font-size:.7rem;font-family:var(--font-label);cursor:pointer;border-right:1px solid var(--s0);transition:background 100ms ease,color 100ms ease;}
@@ -258,6 +267,12 @@ const dashboardHTML = `<!doctype html>
     .badge.cache{color:var(--green);border-color:var(--s1);}
 
     .detail{color:var(--ov0);font-family:var(--font-label);font-size:.62rem;}
+    tbody tr.req-row{cursor:pointer;}
+    tbody tr.detail-row td,tbody tr.detail-row:hover td{background:var(--crust);white-space:normal;padding:0;}
+    .detail-box{padding:10px 14px;display:grid;gap:6px;border-left:2px solid var(--s1);}
+    .detail-box .line{font-size:.7rem;color:var(--sub1);font-family:var(--font-label);}
+    .detail-box .line b{color:var(--ov1);font-weight:600;text-transform:uppercase;font-size:.6rem;letter-spacing:.06em;margin-right:6px;}
+    .detail-box pre{margin:0;font-size:.64rem;color:var(--sub0);white-space:pre-wrap;word-break:break-all;font-family:var(--font-data);}
     .empty{padding:36px 16px;color:var(--ov0);text-align:center;white-space:normal;font-family:var(--font-label);}
     .empty.error{color:var(--red);}
     .loading{padding:10px 0;color:var(--ov0);font-size:.74rem;display:flex;align-items:center;gap:8px;font-family:var(--font-label);}
@@ -297,6 +312,7 @@ const dashboardHTML = `<!doctype html>
         <div class="kv"><dt>account</dt><dd id="accountState">—</dd></div>
         <div class="kv"><dt>seen</dt><dd id="requestCount">0</dd></div>
         <div class="kv"><dt>retained</dt><dd id="retainedCount">0 / 0</dd></div>
+        <div class="kv"><dt>log</dt><dd id="persistInfo">—</dd></div>
         <div class="kv"><dt>updated</dt><dd id="snapshotTime">—</dd></div>
       </dl>
       <form class="keybox" id="keyForm">
@@ -362,6 +378,17 @@ const dashboardHTML = `<!doctype html>
 
       <section class="panel">
         <div class="panel-head">
+          <h3>Cost totals</h3>
+          <span class="mono small muted" id="costsSource">—</span>
+        </div>
+        <div class="panel-body">
+          <div class="cost-grid" id="costGrid"><div class="loading">loading costs…</div></div>
+          <ul class="cost-models" id="costModels"></ul>
+        </div>
+      </section>
+
+      <section class="panel">
+        <div class="panel-head">
           <h3>Requests <span class="muted small mono" id="requestsCounter"></span></h3>
           <div class="toolbar" role="toolbar" aria-label="Filter requests">
             <div class="chips" role="group" aria-label="Quick filter">
@@ -407,6 +434,8 @@ const dashboardHTML = `<!doctype html>
         paused: false,
         textFilter: "",
         quickFilter: "all",
+        expandedId: null,
+        lastRenderSig: "",
         key: sessionStorage.getItem("codex_auth_broker_key") || ""
       };
 
@@ -475,6 +504,13 @@ const dashboardHTML = `<!doctype html>
         if (value < 0.01) return "$" + value.toFixed(4);
         if (value < 1) return "$" + value.toFixed(3);
         return "$" + value.toFixed(2);
+      }
+
+      function fmtBytes(value) {
+        if (value == null || value <= 0) return "0 B";
+        if (value < 1024) return value + " B";
+        if (value < 1024 * 1024) return (value / 1024).toFixed(1) + " KB";
+        return (value / (1024 * 1024)).toFixed(1) + " MB";
       }
 
       function relTime(epochSeconds) {
@@ -576,6 +612,37 @@ const dashboardHTML = `<!doctype html>
         }
       }
 
+      async function loadCosts() {
+        try {
+          const costs = await fetchJSON("/dashboard/api/costs");
+          const windows = costs.windows || {};
+          const order = ["24h", "7d", "30d", "all"];
+          $("costGrid").innerHTML = order.map((key) => {
+            const win = windows[key] || {};
+            const sub = (win.requests || 0) + " req · " + fmtTokens(win.input_tokens || 0) + " in · " + fmtTokens(win.output_tokens || 0) + " out";
+            return '<div class="cost-cell"><span>' + key + '</span>' +
+              '<strong>' + fmtCost(win.priced ? win.cost_usd : null) + '</strong>' +
+              '<em>' + escapeHTML(sub) + '</em></div>';
+          }).join("");
+          const models = (windows.all && windows.all.models) || [];
+          $("costModels").innerHTML = models.map((m) =>
+            '<li><span>' + escapeHTML(m.model || "unknown") + ' · ' + m.requests + ' req</span><b>' + fmtCost(m.cost_usd) + '</b></li>'
+          ).join("");
+          if (costs.source === "file") {
+            $("costsSource").textContent = "from " + fmtBytes(costs.persist_bytes) + " log";
+            const parts = String(costs.persist_path || "").split("/");
+            $("persistInfo").textContent = parts[parts.length - 1] + " · " + fmtBytes(costs.persist_bytes);
+            $("persistInfo").title = costs.persist_path || "";
+          } else {
+            $("costsSource").textContent = "memory only";
+            $("persistInfo").textContent = "disabled";
+          }
+        } catch (err) {
+          $("costGrid").innerHTML = '<div class="empty error">' + escapeHTML(err.message) + '</div>';
+          $("costModels").innerHTML = "";
+        }
+      }
+
       async function loadRequests() {
         try {
           const snapshot = await fetchJSON("/dashboard/api/requests?limit=250");
@@ -586,6 +653,7 @@ const dashboardHTML = `<!doctype html>
           $("snapshotTime").textContent = fmtTime(snapshot.generated_at);
           renderRequests();
         } catch (err) {
+          state.lastRenderSig = "";
           $("requestRows").innerHTML = '<tr><td colspan="10" class="empty error">' + escapeHTML(err.message) + '</td></tr>';
         }
       }
@@ -610,8 +678,14 @@ const dashboardHTML = `<!doctype html>
         });
       }
 
-      function renderRequests() {
+      function renderRequests(force) {
         const rows = filteredRequests();
+        // Entries are immutable once logged, so the visible ids + filters
+        // fully describe the table. Skip the rebuild when nothing changed to
+        // keep text selection and hover state alive across auto-refresh.
+        const sig = state.quickFilter + "|" + state.textFilter + "|" + state.expandedId + "|" + rows.map((r) => r.id).join(",");
+        if (!force && sig === state.lastRenderSig) return;
+        state.lastRenderSig = sig;
         const counter = state.requests.length === rows.length
           ? (rows.length ? rows.length.toString() : "")
           : rows.length + " of " + state.requests.length;
@@ -672,26 +746,7 @@ const dashboardHTML = `<!doctype html>
             ? '<span class="mono detail" title="' + escapeHTML(id) + '">' + escapeHTML(id) + '</span>'
             : '<span class="muted">—</span>';
         }
-        const tipObj = {
-          started: req.started_at,
-          method: req.method,
-          path: req.path,
-          status: req.status,
-          upstream_status: req.upstream_status,
-          model: req.model,
-          normalized: req.normalized_model,
-          effort: req.reasoning_effort,
-          stream: req.stream,
-          input_count: req.input_count,
-          tool_count: req.tool_count,
-          prompt_cache_key_set: req.prompt_cache_key_set,
-          prompt_cache_retention_set: req.prompt_cache_retention_set,
-          service_tier: req.service_tier,
-          request_id: req.request_id,
-          client: req.client
-        };
-        const tip = escapeHTML(JSON.stringify(tipObj, null, 2));
-        return '<tr title="' + tip + '">' +
+        let html = '<tr class="req-row" data-id="' + req.id + '">' +
           '<td class="col-time mono">' + fmtTime(req.started_at) + '</td>' +
           '<td class="col-status"><span class="status ' + statusClass(status) + '">' + (status || "—") + '</span>' + upstreamHint + '</td>' +
           '<td class="col-model">' + modelLine + '</td>' +
@@ -703,6 +758,31 @@ const dashboardHTML = `<!doctype html>
           '<td class="col-cache">' + cacheCell + '</td>' +
           '<td>' + detail + '</td>' +
         '</tr>';
+        if (state.expandedId === req.id) html += renderDetailRow(req);
+        return html;
+      }
+
+      function renderDetailRow(req) {
+        const lines = [];
+        if (req.input_tokens != null || req.output_tokens != null) {
+          const cached = req.cached_tokens || 0;
+          const input = req.input_tokens || 0;
+          let tok = fmtTokens(input) + " in";
+          if (cached) tok += " (" + fmtTokens(cached) + " cached, " + fmtTokens(Math.max(0, input - cached)) + " fresh)";
+          tok += " · " + fmtTokens(req.output_tokens || 0) + " out";
+          if (req.total_tokens != null) tok += " · " + fmtTokens(req.total_tokens) + " total";
+          lines.push("<div class='line'><b>tokens</b>" + escapeHTML(tok) + "</div>");
+        }
+        if (req.cost_usd != null) {
+          lines.push("<div class='line'><b>est. cost</b>$" + Number(req.cost_usd).toFixed(6) + " API-equivalent</div>");
+        }
+        const meta = {};
+        ["id", "started_at", "method", "path", "status", "upstream_status", "model", "normalized_model",
+         "reasoning_effort", "service_tier", "stream", "duration_ms", "input_count", "tool_count",
+         "prompt_cache_key_set", "prompt_cache_retention_set", "request_id", "client", "error"
+        ].forEach((key) => { if (req[key] !== undefined && req[key] !== "" && req[key] !== null) meta[key] = req[key]; });
+        lines.push("<pre>" + escapeHTML(JSON.stringify(meta, null, 2)) + "</pre>");
+        return '<tr class="detail-row"><td colspan="10"><div class="detail-box">' + lines.join("") + '</div></td></tr>';
       }
 
       function renderCache(req) {
@@ -816,8 +896,17 @@ const dashboardHTML = `<!doctype html>
       }
 
       async function refreshAll() {
-        await Promise.allSettled([loadHealth(), loadUsage(), loadRequests()]);
+        await Promise.allSettled([loadHealth(), loadUsage(), loadRequests(), loadCosts()]);
       }
+
+      $("requestRows").addEventListener("click", (e) => {
+        if (window.getSelection && String(window.getSelection())) return;
+        const row = e.target.closest("tr.req-row");
+        if (!row) return;
+        const id = Number(row.dataset.id);
+        state.expandedId = state.expandedId === id ? null : id;
+        renderRequests(true);
+      });
 
       $("saveKey").addEventListener("click", () => {
         state.key = $("apiKey").value.trim();
@@ -851,6 +940,7 @@ const dashboardHTML = `<!doctype html>
           await fetchJSON("/dashboard/api/requests", { method: "DELETE" });
           await loadRequests();
         } catch (err) {
+          state.lastRenderSig = "";
           $("requestRows").innerHTML = '<tr><td colspan="10" class="empty error">' + escapeHTML(err.message) + '</td></tr>';
         }
       });
@@ -876,7 +966,7 @@ const dashboardHTML = `<!doctype html>
       setPill("refreshPill", "ok", "auto · 3s");
       refreshAll();
       setInterval(() => { if (!state.paused) loadRequests(); }, 3000);
-      setInterval(() => { if (!state.paused) loadUsage(); }, 30000);
+      setInterval(() => { if (!state.paused) { loadUsage(); loadCosts(); } }, 30000);
     })();
   </script>
   <script>
