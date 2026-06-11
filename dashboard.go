@@ -472,7 +472,7 @@ const dashboardHTML = `<!doctype html>
       function fmtCost(value) {
         if (value == null) return "—";
         if (value === 0) return "$0";
-        if (value < 0.01) return "<$0.01";
+        if (value < 0.01) return "$" + value.toFixed(4);
         if (value < 1) return "$" + value.toFixed(3);
         return "$" + value.toFixed(2);
       }
