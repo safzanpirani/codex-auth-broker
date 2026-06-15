@@ -35,7 +35,9 @@ type requestLogEntry struct {
 	UpstreamStatus          int      `json:"upstream_status,omitempty"`
 	Error                   string   `json:"error,omitempty"`
 	PromptCacheKeySet       bool     `json:"prompt_cache_key_set"`
+	PromptCacheKey          string   `json:"prompt_cache_key,omitempty"`
 	PromptCacheRetentionSet bool     `json:"prompt_cache_retention_set"`
+	PromptCacheRetention    string   `json:"prompt_cache_retention,omitempty"`
 	InputCount              int      `json:"input_count,omitempty"`
 	ToolCount               int      `json:"tool_count,omitempty"`
 	InputTokens             *int64   `json:"input_tokens,omitempty"`
@@ -196,7 +198,9 @@ func (l *pendingRequestLog) markRequest(body map[string]any, info requestInfo, r
 	l.Entry.ServiceTier = info.ServiceTier
 	l.Entry.Stream = info.Stream
 	l.Entry.PromptCacheKeySet = info.PromptCacheKeySet
+	l.Entry.PromptCacheKey = info.PromptCacheKey
 	l.Entry.PromptCacheRetentionSet = info.PromptCacheRetentionSet
+	l.Entry.PromptCacheRetention = info.PromptCacheRetention
 	if requestID := requestID(r, body); requestID != "" {
 		l.Entry.RequestID = requestID
 	}
