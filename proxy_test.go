@@ -132,6 +132,48 @@ func TestNormalizeResponsesBodyCapturesNativeReasoningEffort(t *testing.T) {
 	}
 }
 
+func TestPromptCacheKeyPrefersStableConversationID(t *testing.T) {
+	body := map[string]any{
+		"model":           "gpt-5.5",
+		"input":           "hello",
+		"conversation_id": "conv-123",
+	}
+	req := httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
+	// A per-request id must NOT become the cache key, or it rotates every call
+	// and defeats the backend's prompt cache.
+	req.Header.Set("x-request-id", "req-unique-abc")
+	info := normalizeResponsesBody(body, config{}, req)
+
+	if body["prompt_cache_key"] != "conv-123" {
+		t.Fatalf("prompt_cache_key = %#v, want conv-123", body["prompt_cache_key"])
+	}
+	if info.PromptCacheKey != "conv-123" || !info.PromptCacheKeySet {
+		t.Fatalf("info cache key = %#v (set=%t), want conv-123", info.PromptCacheKey, info.PromptCacheKeySet)
+	}
+	// conversation_id is used to derive the key but must be stripped — the Codex
+	// backend 400s on it.
+	if _, ok := body["conversation_id"]; ok {
+		t.Fatal("conversation_id should be stripped before forwarding")
+	}
+}
+
+func TestPromptCacheKeyConfigWinsOverRequest(t *testing.T) {
+	body := map[string]any{
+		"model":           "gpt-5.5",
+		"input":           "hello",
+		"conversation_id": "conv-123",
+	}
+	req := httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
+	info := normalizeResponsesBody(body, config{promptCacheKey: "fixed-key"}, req)
+
+	if body["prompt_cache_key"] != "fixed-key" {
+		t.Fatalf("prompt_cache_key = %#v, want fixed-key", body["prompt_cache_key"])
+	}
+	if info.PromptCacheKey != "fixed-key" {
+		t.Fatalf("info.PromptCacheKey = %#v, want fixed-key", info.PromptCacheKey)
+	}
+}
+
 func TestAggregateResponsesSSE(t *testing.T) {
 	stream := strings.Join([]string{
 		"event: response.output_item.done",

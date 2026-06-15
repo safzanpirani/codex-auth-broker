@@ -140,8 +140,23 @@ prompt_cache_key = factory-droid
 ```
 
 Factory Droid `0.122` can send `prompt_cache_retention: "24h"` through the
-OpenAI SDK path. The Codex backend currently rejects that request field, so the
-proxy strips it and relies on `prompt_cache_key` for cache affinity.
+OpenAI SDK path. The Codex backend rejects that request field outright
+(`400 Unsupported parameter: prompt_cache_retention`) — verified against the
+live endpoint, and Codex's own client never sends it — so the proxy strips it.
+Retention is not the lever anyway: the backend already applies 24h retention
+server-side by default (its `response.created` object echoes
+`prompt_cache_retention: "24h"` even when the field is never sent).
+
+Cache *hits* therefore depend entirely on a **stable** `prompt_cache_key`.
+Codex keys on the conversation/thread id so every turn shares one key. This
+proxy mirrors that: it injects `prompt_cache_key` (when the client omits one)
+preferring stable conversation/session identifiers — body `conversation_id` /
+`session_id`, then the `session_id` header — and only falls back to a
+per-request id (`x-request-id`) as a last resort, since a per-request id
+rotates every call and gives no reuse. For clients that send only a unique
+per-request id, set a fixed `--prompt-cache-key` so the 24h server cache is
+actually reused. The dashboard's cache column shows the key (hover for the full
+value) so you can confirm it is not rotating.
 
 Cache hits are visible in Responses usage as:
 

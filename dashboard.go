@@ -779,7 +779,7 @@ const dashboardHTML = `<!doctype html>
         const meta = {};
         ["id", "started_at", "method", "path", "status", "upstream_status", "model", "normalized_model",
          "reasoning_effort", "service_tier", "stream", "duration_ms", "input_count", "tool_count",
-         "prompt_cache_key_set", "prompt_cache_retention_set", "request_id", "client", "error"
+         "prompt_cache_key_set", "prompt_cache_key", "prompt_cache_retention_set", "prompt_cache_retention", "request_id", "client", "error"
         ].forEach((key) => { if (req[key] !== undefined && req[key] !== "" && req[key] !== null) meta[key] = req[key]; });
         lines.push("<pre>" + escapeHTML(JSON.stringify(meta, null, 2)) + "</pre>");
         return '<tr class="detail-row"><td colspan="10"><div class="detail-box">' + lines.join("") + '</div></td></tr>';
@@ -788,8 +788,16 @@ const dashboardHTML = `<!doctype html>
       function renderCache(req) {
         const cached = req.cached_tokens;
         const input = req.input_tokens;
-        const flag = req.prompt_cache_key_set ? '<span class="badge cache">key</span>' : '';
-        if (cached == null && !req.prompt_cache_key_set) return '<span class="muted">—</span>';
+        const keyVal = req.prompt_cache_key ? String(req.prompt_cache_key) : '';
+        const keyShort = keyVal ? (keyVal.length > 8 ? '…' + keyVal.slice(-6) : keyVal) : '';
+        const keyFlag = req.prompt_cache_key_set
+          ? '<span class="badge cache" title="prompt_cache_key' + (keyVal ? ' = ' + escapeHTML(keyVal) : '') + ' — same value across turns means the backend 24h cache is reused">key' + (keyShort ? ' ' + escapeHTML(keyShort) : '') + '</span>'
+          : '';
+        const ttlFlag = req.prompt_cache_retention
+          ? '<span class="badge cache" title="prompt_cache_retention requested by client — stripped before forwarding to Codex">ttl ' + escapeHTML(req.prompt_cache_retention) + '</span>'
+          : (req.prompt_cache_retention_set ? '<span class="badge cache" title="prompt_cache_retention requested by client — stripped before forwarding to Codex">ttl on</span>' : '');
+        const flag = keyFlag + ttlFlag;
+        if (cached == null && !req.prompt_cache_key_set && !req.prompt_cache_retention_set) return '<span class="muted">—</span>';
         if (cached == null || cached === 0) {
           return '<div class="cache-cell">' + flag + '<span class="cache-pct cold">0% cached</span></div>';
         }

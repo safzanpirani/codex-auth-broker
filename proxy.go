@@ -30,7 +30,9 @@ type requestInfo struct {
 	ServiceTier             string
 	Stream                  bool
 	PromptCacheKeySet       bool
+	PromptCacheKey          string
 	PromptCacheRetentionSet bool
+	PromptCacheRetention    string
 }
 
 func (p *responsesProxy) handleHealth(w http.ResponseWriter, _ *http.Request) {
@@ -79,8 +81,8 @@ func (p *responsesProxy) handleResponses(w http.ResponseWriter, r *http.Request)
 	}
 	info := normalizeResponsesBody(body, p.cfg, r)
 	logEntry.markRequest(body, info, r)
-	log.Printf("responses request model=%s normalized=%s service_tier=%s stream=%t prompt_cache_key=%t prompt_cache_retention=%t",
-		info.Model, info.NormalizedModel, info.ServiceTier, info.Stream, info.PromptCacheKeySet, info.PromptCacheRetentionSet)
+	log.Printf("responses request model=%s normalized=%s service_tier=%s stream=%t prompt_cache_key=%t prompt_cache_retention=%s",
+		info.Model, info.NormalizedModel, info.ServiceTier, info.Stream, info.PromptCacheKeySet, valueOr(info.PromptCacheRetention, "none"))
 
 	upstreamBody := body
 	if !info.Stream {
@@ -216,13 +218,17 @@ func normalizeResponsesBody(body map[string]any, cfg config, r *http.Request) re
 	if info.ReasoningEffort == "" {
 		info.ReasoningEffort = reasoningEffortFromBody(body)
 	}
-	if stringField(body, "prompt_cache_retention") != "" || stringField(body, "promptCacheRetention") != "" {
+	if retention := valueOr(stringField(body, "prompt_cache_retention"), stringField(body, "promptCacheRetention")); retention != "" {
 		info.PromptCacheRetentionSet = true
+		info.PromptCacheRetention = retention
 	}
 	info.ServiceTier = normalizeServiceTier(body)
 	if _, ok := body["store"]; !ok {
 		body["store"] = false
 	}
+	// Capture the conversation-stable key candidate before removeUnsupportedParams
+	// strips the session/conversation id fields (the backend 400s on them).
+	stableKey := stablePromptCacheKey(r, body)
 	removeUnsupportedParams(body)
 	normalizeInput(body)
 	if stringField(body, "instructions") == "" {
@@ -244,16 +250,22 @@ func normalizeResponsesBody(body map[string]any, cfg config, r *http.Request) re
 	}
 	if current := stringField(body, "prompt_cache_key"); current != "" {
 		info.PromptCacheKeySet = true
+		info.PromptCacheKey = current
 	} else if key := strings.TrimSpace(cfg.promptCacheKey); key != "" {
 		body["prompt_cache_key"] = key
 		info.PromptCacheKeySet = true
+		info.PromptCacheKey = key
 	}
 	if stream, ok := body["stream"].(bool); ok {
 		info.Stream = stream
 	}
-	if requestID := requestID(r, body); requestID != "" && !info.PromptCacheKeySet && strings.TrimSpace(cfg.promptCacheKey) == "" {
-		body["prompt_cache_key"] = requestID
+	// Fall back to a conversation-stable key so the backend's 24h prompt cache
+	// is actually reused across turns. Codex itself keys on the thread id; a
+	// per-request id here would rotate the key every call and defeat caching.
+	if stableKey != "" && !info.PromptCacheKeySet {
+		body["prompt_cache_key"] = stableKey
 		info.PromptCacheKeySet = true
+		info.PromptCacheKey = stableKey
 	}
 	return info
 }
@@ -368,6 +380,12 @@ func removeUnsupportedParams(body map[string]any) {
 	delete(body, "maxCompletionTokens")
 	delete(body, "prompt_cache_retention")
 	delete(body, "promptCacheRetention")
+	// session/conversation ids are captured for prompt_cache_key derivation, but
+	// the Codex backend 400s on them ("Unsupported parameter: conversation_id").
+	delete(body, "session_id")
+	delete(body, "sessionId")
+	delete(body, "conversation_id")
+	delete(body, "conversationId")
 	delete(body, "stream_options")
 	delete(body, "streamOptions")
 	delete(body, "user")
@@ -523,6 +541,28 @@ func requestID(r *http.Request, body map[string]any) string {
 	}
 	for _, key := range []string{"session_id", "sessionId", "conversation_id", "conversationId", "prompt_cache_key"} {
 		if value := stringField(body, key); value != "" {
+			return value
+		}
+	}
+	return ""
+}
+
+// stablePromptCacheKey derives a prompt_cache_key that stays constant across all
+// turns of a conversation, so the backend's prompt cache is actually reused.
+// Conversation/session identifiers are preferred; per-request ids
+// (x-request-id) are only a last resort because they rotate every call and
+// would give no cache reuse at all.
+func stablePromptCacheKey(r *http.Request, body map[string]any) string {
+	for _, key := range []string{"session_id", "sessionId", "conversation_id", "conversationId", "prompt_cache_key"} {
+		if value := stringField(body, key); value != "" {
+			return value
+		}
+	}
+	if value := strings.TrimSpace(r.Header.Get("session_id")); value != "" {
+		return value
+	}
+	for _, key := range []string{"x-client-request-id", "x-request-id"} {
+		if value := strings.TrimSpace(r.Header.Get(key)); value != "" {
 			return value
 		}
 	}
