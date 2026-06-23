@@ -157,6 +157,31 @@ func TestPromptCacheKeyPrefersStableConversationID(t *testing.T) {
 	}
 }
 
+func TestPromptCacheKeyIgnoresRotatingRequestID(t *testing.T) {
+	// No session/conversation id and no configured key: the only candidate is a
+	// rotating per-request id. It must NOT be injected — a key that changes every
+	// call scopes the backend cache to a single request and defeats reuse. We'd
+	// rather inject nothing and let the automatic prefix cache work unscoped.
+	for _, hdr := range []string{"x-request-id", "x-client-request-id"} {
+		t.Run(hdr, func(t *testing.T) {
+			body := map[string]any{
+				"model": "gpt-5.5",
+				"input": "hello",
+			}
+			req := httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
+			req.Header.Set(hdr, "req-rotates-every-call")
+			info := normalizeResponsesBody(body, config{}, req)
+
+			if v, ok := body["prompt_cache_key"]; ok {
+				t.Fatalf("prompt_cache_key = %#v, want it left unset for a rotating %s", v, hdr)
+			}
+			if info.PromptCacheKeySet || info.PromptCacheKey != "" {
+				t.Fatalf("info cache key = %#v (set=%t), want unset", info.PromptCacheKey, info.PromptCacheKeySet)
+			}
+		})
+	}
+}
+
 func TestPromptCacheKeyConfigWinsOverRequest(t *testing.T) {
 	body := map[string]any{
 		"model":           "gpt-5.5",
