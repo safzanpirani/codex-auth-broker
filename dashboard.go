@@ -791,7 +791,7 @@ const dashboardHTML = `<!doctype html>
         const keyVal = req.prompt_cache_key ? String(req.prompt_cache_key) : '';
         const keyShort = keyVal ? (keyVal.length > 8 ? '…' + keyVal.slice(-6) : keyVal) : '';
         const keyFlag = req.prompt_cache_key_set
-          ? '<span class="badge cache" title="prompt_cache_key' + (keyVal ? ' = ' + escapeHTML(keyVal) : '') + ' — same value across turns means the backend 24h cache is reused">key' + (keyShort ? ' ' + escapeHTML(keyShort) : '') + '</span>'
+          ? '<span class="badge cache" title="prompt_cache_key' + (keyVal ? ' = ' + escapeHTML(keyVal) : '') + ' — a value that stays stable across a conversation lets the backend reuse its automatic prefix cache; rotating per-request ids are never injected as the key">key' + (keyShort ? ' ' + escapeHTML(keyShort) : '') + '</span>'
           : '';
         const ttlFlag = req.prompt_cache_retention
           ? '<span class="badge cache" title="prompt_cache_retention requested by client — stripped before forwarding to Codex">ttl ' + escapeHTML(req.prompt_cache_retention) + '</span>'

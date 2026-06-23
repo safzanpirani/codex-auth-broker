@@ -549,9 +549,12 @@ func requestID(r *http.Request, body map[string]any) string {
 
 // stablePromptCacheKey derives a prompt_cache_key that stays constant across all
 // turns of a conversation, so the backend's prompt cache is actually reused.
-// Conversation/session identifiers are preferred; per-request ids
-// (x-request-id) are only a last resort because they rotate every call and
-// would give no cache reuse at all.
+// Only conversation/session identifiers qualify. Per-request ids (e.g.
+// x-request-id / x-client-request-id) are deliberately NOT used: they rotate
+// on every call, so injecting one would stamp a fresh cache key per request —
+// scoping the backend cache to a single call and giving zero reuse, which is
+// strictly worse than injecting nothing. When no stable id is available we
+// return "" and let the backend's automatic prefix cache work unscoped.
 func stablePromptCacheKey(r *http.Request, body map[string]any) string {
 	for _, key := range []string{"session_id", "sessionId", "conversation_id", "conversationId", "prompt_cache_key"} {
 		if value := stringField(body, key); value != "" {
@@ -560,11 +563,6 @@ func stablePromptCacheKey(r *http.Request, body map[string]any) string {
 	}
 	if value := strings.TrimSpace(r.Header.Get("session_id")); value != "" {
 		return value
-	}
-	for _, key := range []string{"x-client-request-id", "x-request-id"} {
-		if value := strings.TrimSpace(r.Header.Get(key)); value != "" {
-			return value
-		}
 	}
 	return ""
 }
