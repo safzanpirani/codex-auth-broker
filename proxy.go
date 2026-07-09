@@ -3,12 +3,14 @@ package main
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"log"
 	"net/http"
+	"net/url"
 	"sort"
 	"strings"
 	"time"
@@ -52,9 +54,23 @@ func (p *responsesProxy) handleModels(w http.ResponseWriter, r *http.Request) {
 		writeProxyError(w, http.StatusUnauthorized, "unauthorized")
 		return
 	}
+
+	ids := p.cfg.models
+	if len(ids) == 0 {
+		// No static list configured: proxy the live Codex model catalog.
+		fetched, err := p.fetchUpstreamModelIDs(r.Context())
+		if err != nil {
+			logEntry.markError(http.StatusBadGateway, "upstream models fetch failed: "+err.Error())
+			log.Printf("upstream models error: %v", err)
+			writeProxyError(w, http.StatusBadGateway, "failed to fetch upstream Codex model list: "+err.Error())
+			return
+		}
+		ids = fetched
+	}
+
 	now := time.Now().Unix()
-	models := make([]map[string]any, 0, len(p.cfg.models))
-	for _, model := range p.cfg.models {
+	models := make([]map[string]any, 0, len(ids))
+	for _, model := range ids {
 		models = append(models, map[string]any{
 			"id":       model,
 			"object":   "model",
@@ -62,7 +78,79 @@ func (p *responsesProxy) handleModels(w http.ResponseWriter, r *http.Request) {
 			"owned_by": "codex-auth-broker",
 		})
 	}
+	logEntry.Entry.Status = http.StatusOK
 	writeJSON(w, http.StatusOK, map[string]any{"object": "list", "data": models})
+}
+
+// upstreamModel is the subset of the Codex models endpoint response we consume.
+type upstreamModel struct {
+	Slug                     string `json:"slug"`
+	Visibility               string `json:"visibility"`
+	SupportedInAPI           bool   `json:"supported_in_api"`
+	SupportedReasoningLevels []struct {
+		Effort string `json:"effort"`
+	} `json:"supported_reasoning_levels"`
+}
+
+// fetchUpstreamModelIDs calls the Codex models endpoint with the broker's
+// stored auth and returns model ids in the broker's client-facing form:
+// the bare slug followed by one "slug(effort)" variant per supported reasoning
+// level. Only models with visibility "list" and supported_in_api are included.
+func (p *responsesProxy) fetchUpstreamModelIDs(ctx context.Context) ([]string, error) {
+	access, err := p.auth.current(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("Codex auth failed: %w", err)
+	}
+
+	endpoint := p.cfg.modelsURL
+	if clientVersion := strings.TrimSpace(p.cfg.modelsClientVersion); clientVersion != "" {
+		sep := "?"
+		if strings.Contains(endpoint, "?") {
+			sep = "&"
+		}
+		endpoint += sep + "client_version=" + url.QueryEscape(clientVersion)
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+	if err != nil {
+		return nil, fmt.Errorf("build upstream models request failed: %w", err)
+	}
+	req.Header.Set("Authorization", "Bearer "+access.AccessToken)
+	req.Header.Set("chatgpt-account-id", access.AccountID)
+	req.Header.Set("originator", "codex-auth-broker")
+	req.Header.Set("User-Agent", "codex-auth-broker/"+valueOr(version, "dev"))
+	req.Header.Set("OpenAI-Beta", "responses=experimental")
+	req.Header.Set("Accept", "application/json")
+
+	resp, err := p.client.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("upstream request failed: %w", err)
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(io.LimitReader(resp.Body, 256*1024))
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return nil, fmt.Errorf("upstream returned %d: %s", resp.StatusCode, summarizeUpstreamError(body, resp.StatusCode))
+	}
+
+	var parsed struct {
+		Models []upstreamModel `json:"models"`
+	}
+	if err := json.Unmarshal(body, &parsed); err != nil {
+		return nil, fmt.Errorf("decode upstream models failed: %w", err)
+	}
+
+	ids := make([]string, 0, len(parsed.Models)*5)
+	for _, m := range parsed.Models {
+		if m.Slug == "" || m.Visibility != "list" || !m.SupportedInAPI {
+			continue
+		}
+		ids = append(ids, m.Slug)
+		for _, level := range m.SupportedReasoningLevels {
+			if effort := normalizeReasoningEffort(level.Effort); effort != "" {
+				ids = append(ids, m.Slug+"("+effort+")")
+			}
+		}
+	}
+	return ids, nil
 }
 
 func (p *responsesProxy) handleResponses(w http.ResponseWriter, r *http.Request) {

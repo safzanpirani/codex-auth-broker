@@ -100,6 +100,12 @@ Models:
 curl -fsS http://127.0.0.1:8317/v1/models
 ```
 
+By default `/v1/models` proxies the live Codex model catalog (each usable slug
+plus its `slug(effort)` reasoning variants) fetched with the broker's stored
+auth, so new models appear automatically as the Codex backend adds them. It
+returns `502` if that upstream fetch fails. Set `--models` /
+`CODEX_AUTH_BROKER_MODELS` to serve a fixed list instead.
+
 Real Responses call:
 
 ```bash
@@ -282,10 +288,12 @@ Flags and equivalent environment variables:
 | `--prompt-cache-key` | `CODEX_AUTH_BROKER_PROMPT_CACHE_KEY` | `factory-droid` |
 | `--prompt-cache-retention` | `CODEX_AUTH_BROKER_PROMPT_CACHE_RETENTION` | accepted for compatibility but not forwarded |
 | `--usage-url` | `CODEX_AUTH_BROKER_USAGE_URL` | ChatGPT wham usage endpoint |
+| `--models-url` | `CODEX_AUTH_BROKER_MODELS_URL` | ChatGPT Codex models endpoint |
+| n/a | `CODEX_AUTH_BROKER_MODELS_CLIENT_VERSION` | `2.0.0` (`client_version` sent to the Codex models endpoint) |
 | `--request-log-limit` | `CODEX_AUTH_BROKER_REQUEST_LOG_LIMIT` | `1000` |
 | `--request-log-file` | `CODEX_AUTH_BROKER_REQUEST_LOG_FILE` | `~/.codex-auth-broker/requests.jsonl` (empty disables) |
 | n/a | `CODEX_AUTH_BROKER_PRICING` | built-in per-model USD/1M-token table |
-| `--models` | `CODEX_AUTH_BROKER_MODELS` | built-in GPT list |
+| `--models` | `CODEX_AUTH_BROKER_MODELS` | empty; proxies the live Codex model list |
 | `--refresh-skew` | `CODEX_AUTH_BROKER_REFRESH_SKEW` | `10m` |
 | `--timeout` | none | `10m` |
 

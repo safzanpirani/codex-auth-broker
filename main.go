@@ -14,14 +14,20 @@ import (
 )
 
 const (
-	defaultListen          = "127.0.0.1:8317"
-	defaultRefreshSkew     = 10 * time.Minute
-	defaultHTTPTimeout     = 10 * time.Minute
-	defaultPromptKey       = "factory-droid"
-	defaultUpstreamURL     = "https://chatgpt.com/backend-api/codex/responses"
-	defaultUsageURL        = "https://chatgpt.com/backend-api/wham/usage"
-	defaultInstructions    = "You are a helpful coding assistant."
-	defaultRequestLogLimit = 1000
+	defaultListen      = "127.0.0.1:8317"
+	defaultRefreshSkew = 10 * time.Minute
+	defaultHTTPTimeout = 10 * time.Minute
+	defaultPromptKey   = "factory-droid"
+	defaultUpstreamURL = "https://chatgpt.com/backend-api/codex/responses"
+	defaultModelsURL   = "https://chatgpt.com/backend-api/codex/models"
+	defaultUsageURL    = "https://chatgpt.com/backend-api/wham/usage"
+	// defaultModelsClientVersion is sent as the required ?client_version= query
+	// param on the upstream codex/models endpoint. The upstream gates its model
+	// list on this value (older versions return an empty list), so we send a
+	// high version to receive the full catalog.
+	defaultModelsClientVersion = "2.0.0"
+	defaultInstructions        = "You are a helpful coding assistant."
+	defaultRequestLogLimit     = 1000
 )
 
 var (
@@ -39,6 +45,8 @@ type config struct {
 	promptCacheRetention string
 	refreshSkew          time.Duration
 	upstreamURL          string
+	modelsURL            string
+	modelsClientVersion  string
 	usageURL             string
 	models               []string
 	timeout              time.Duration
@@ -177,9 +185,11 @@ func loadConfig(args []string) (config, error) {
 		promptCacheKey:       envOr("CODEX_AUTH_BROKER_PROMPT_CACHE_KEY", defaultPromptKey),
 		promptCacheRetention: envOr("CODEX_AUTH_BROKER_PROMPT_CACHE_RETENTION", ""),
 		upstreamURL:          envOr("CODEX_AUTH_BROKER_UPSTREAM_RESPONSES_URL", defaultUpstreamURL),
+		modelsURL:            envOr("CODEX_AUTH_BROKER_MODELS_URL", defaultModelsURL),
+		modelsClientVersion:  envOr("CODEX_AUTH_BROKER_MODELS_CLIENT_VERSION", defaultModelsClientVersion),
 		usageURL:             envOr("CODEX_AUTH_BROKER_USAGE_URL", defaultUsageURL),
 		refreshSkew:          defaultRefreshSkew,
-		models:               defaultModels(),
+		models:               nil,
 		timeout:              defaultHTTPTimeout,
 		requestLogLimit:      defaultRequestLogLimit,
 		requestLogFile:       envOr("CODEX_AUTH_BROKER_REQUEST_LOG_FILE", defaultRequestLogFile()),
@@ -213,8 +223,9 @@ func loadConfig(args []string) (config, error) {
 	fs.StringVar(&cfg.promptCacheKey, "prompt-cache-key", cfg.promptCacheKey, "prompt_cache_key to inject when absent; empty disables injection")
 	fs.StringVar(&cfg.promptCacheRetention, "prompt-cache-retention", cfg.promptCacheRetention, "prompt_cache_retention to inject when absent: in_memory or 24h")
 	fs.StringVar(&cfg.upstreamURL, "upstream-responses-url", cfg.upstreamURL, "ChatGPT Codex Responses endpoint")
+	fs.StringVar(&cfg.modelsURL, "models-url", cfg.modelsURL, "ChatGPT Codex models endpoint proxied by /v1/models")
 	fs.StringVar(&cfg.usageURL, "usage-url", cfg.usageURL, "ChatGPT Codex usage endpoint")
-	fs.StringVar(&modelsValue, "models", modelsValue, "comma-separated model ids to return from /v1/models")
+	fs.StringVar(&modelsValue, "models", modelsValue, "comma-separated model ids to serve statically from /v1/models; empty proxies the live Codex model list")
 	fs.StringVar(&skewValue, "refresh-skew", skewValue, "refresh access token when it expires within this duration")
 	fs.StringVar(&timeoutValue, "timeout", timeoutValue, "upstream request timeout")
 	fs.IntVar(&cfg.requestLogLimit, "request-log-limit", cfg.requestLogLimit, "maximum in-memory dashboard request entries")
@@ -236,10 +247,9 @@ func loadConfig(args []string) (config, error) {
 		}
 		cfg.apiKey = secret
 	}
+	// An empty model list is intentional: /v1/models then proxies the live
+	// Codex model catalog instead of serving a static list.
 	cfg.models = splitCSV(modelsValue)
-	if len(cfg.models) == 0 {
-		return cfg, errors.New("at least one model must be configured")
-	}
 	parsedSkew, err := time.ParseDuration(skewValue)
 	if err != nil {
 		return cfg, fmt.Errorf("invalid refresh-skew: %w", err)
@@ -283,31 +293,6 @@ Common flags:
   --request-log-limit      In-memory dashboard request history size
   --request-log-file       JSONL file for persistent request metadata; empty disables
 `)
-}
-
-func defaultModels() []string {
-	return []string{
-		"gpt-5.5",
-		"gpt-5.5(low)",
-		"gpt-5.5(medium)",
-		"gpt-5.5(high)",
-		"gpt-5.5(xhigh)",
-		"gpt-5.4",
-		"gpt-5.4(low)",
-		"gpt-5.4(medium)",
-		"gpt-5.4(high)",
-		"gpt-5.4(xhigh)",
-		"gpt-5.4-mini",
-		"gpt-5.4-mini(low)",
-		"gpt-5.4-mini(medium)",
-		"gpt-5.4-mini(high)",
-		"gpt-5.4-mini(xhigh)",
-		"gpt-5.3-codex",
-		"gpt-5.3-codex(low)",
-		"gpt-5.3-codex(medium)",
-		"gpt-5.3-codex(high)",
-		"gpt-5.3-codex(xhigh)",
-	}
 }
 
 func splitCSV(value string) []string {
