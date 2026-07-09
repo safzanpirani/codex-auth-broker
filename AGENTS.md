@@ -10,7 +10,13 @@ OAuth login, while keeping the real refresh token local.
 
 ## Safety Rules
 
-- Never commit `~/.codex/auth.json`.
+- Never commit `~/.codex/auth.json` or any pooled auth file (`~/.codex-2/...` etc.).
+- Multi-account failover pools several Codex logins via `--auth-files` /
+  `CODEX_AUTH_FILES`; single `--auth-file` stays fully backward compatible. The
+  broker is the sole owner of every pooled token's refresh — never run a second
+  refresher (another broker, or the Codex CLI in normal use) against a pooled
+  `auth.json`. Keep the README "Multi-Account Failover" section and
+  `docs/multi-account.md` in sync with `accounts.go`.
 - Never print or commit access tokens, refresh tokens, id tokens, API keys, or
   generated client keys.
 - Do not add public-internet bind examples without strong warnings.

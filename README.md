@@ -28,6 +28,8 @@ internet.
 - Preserves or injects `prompt_cache_key` for model-side prompt caching.
 - Strips OpenAI SDK compatibility fields that the Codex backend rejects.
 - Shows a local redacted dashboard with request history and live Codex usage.
+- Optionally pools several Codex accounts and fails over when one hits a rolling
+  usage limit (the ~5-hour or weekly window). See [Multi-Account Failover](#multi-account-failover).
 - Never returns a refresh token to Factory Droid or remote clients.
 
 ## Why This Exists
@@ -283,6 +285,7 @@ Flags and equivalent environment variables:
 | --- | --- | --- |
 | `--listen` | `CODEX_AUTH_BROKER_LISTEN` | `127.0.0.1:8317` |
 | `--auth-file` | `CODEX_AUTH_FILE` | `~/.codex/auth.json` |
+| `--auth-files` | `CODEX_AUTH_FILES` | empty; comma-separated pool for [multi-account failover](#multi-account-failover) (overrides `--auth-file`) |
 | `--api-key` | `CODEX_AUTH_BROKER_API_KEY` | empty |
 | `--api-key-file` | `CODEX_AUTH_BROKER_API_KEY_FILE` | empty |
 | `--prompt-cache-key` | `CODEX_AUTH_BROKER_PROMPT_CACHE_KEY` | `factory-droid` |
@@ -296,6 +299,62 @@ Flags and equivalent environment variables:
 | `--models` | `CODEX_AUTH_BROKER_MODELS` | empty; proxies the live Codex model list |
 | `--refresh-skew` | `CODEX_AUTH_BROKER_REFRESH_SKEW` | `10m` |
 | `--timeout` | none | `10m` |
+
+## Multi-Account Failover
+
+Codex enforces rolling usage windows (roughly a 5-hour bucket and a weekly
+bucket). When one is exhausted the backend returns `429`. With a single account
+that stalls the broker until the window resets. Point the broker at several
+Codex logins and it rotates past a rate-limited account automatically.
+
+Enable it by listing more than one auth file — a login the broker owns and
+refreshes, exactly like the single-account case, just more than one:
+
+```bash
+./codex-auth-broker serve --auth-files ~/.codex/auth.json,~/.codex-2/auth.json
+# or: CODEX_AUTH_FILES=~/.codex/auth.json,~/.codex-2/auth.json ./codex-auth-broker serve
+```
+
+Each account is a separate Codex login in its own `CODEX_HOME`:
+
+```bash
+CODEX_HOME=~/.codex   codex login   # account 1 (the default home)
+mkdir -p ~/.codex-2
+CODEX_HOME=~/.codex-2 codex login   # account 2, a different Codex account
+```
+
+`--auth-files` overrides `--auth-file`; with a single entry it behaves exactly
+like `--auth-file`, so existing setups need no change.
+
+**How it picks an account.** Selection is *sticky*: requests stay on the active
+account (so its backend prompt cache stays warm) until that account returns a
+`429`. The broker then benches it until its window resets and rotates to the
+next available account, retrying the same request transparently — the client
+sees no error. Order in the list is the failover order.
+
+**When it comes back.** The bench deadline prefers an explicit reset from the
+`429` (a `Retry-After` header, a rate-limit reset header, or a machine-readable
+body field such as `resets_in_seconds` / `resets_at`). If none is present it
+falls back on the response wording — "weekly" → 7 days, a usage/5-hour limit →
+5 hours, otherwise 60 seconds — clamped to `[30s, 8d]`.
+
+**When every account is cooling down.** The broker returns `429` with a
+`Retry-After` header pointing at the soonest reset across the pool.
+
+**Observability.** `/healthz` lists each account with its availability and
+cooldown; `doctor --auth-files ...` validates every login; and each rotation
+logs a line like:
+
+```text
+codex account .codex-2 hit rate limit window=5h source=retry-after cooling_until=2026-07-09T15:30:00Z; rotating (1/2)
+```
+
+Full runbook, systemd `EnvironmentFile` pattern, and troubleshooting:
+[`docs/multi-account.md`](docs/multi-account.md).
+
+> Pooling multiple accounts to extend usage limits is account-multiplexing that
+> OpenAI's terms discourage. This is an operational feature; use it within the
+> terms that apply to you.
 
 ## Security Model
 
