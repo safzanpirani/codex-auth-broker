@@ -39,6 +39,7 @@ var (
 type config struct {
 	listen               string
 	authFile             string
+	authFiles            []string
 	apiKey               string
 	apiKeyFile           string
 	promptCacheKey       string
@@ -93,13 +94,9 @@ func runServe(args []string) error {
 	if err != nil {
 		return err
 	}
-	auth := &authManager{
-		authFile:    cfg.authFile,
-		refreshSkew: cfg.refreshSkew,
-		client: &http.Client{
-			Timeout: 30 * time.Second,
-		},
-	}
+	pool := newAccountPool(cfg.authFiles, cfg.refreshSkew, &http.Client{
+		Timeout: 30 * time.Second,
+	})
 	pricing, err := loadModelPricing()
 	if err != nil {
 		return err
@@ -121,7 +118,7 @@ func runServe(args []string) error {
 	}
 	proxy := &responsesProxy{
 		cfg:      cfg,
-		auth:     auth,
+		pool:     pool,
 		requests: requests,
 		client: &http.Client{
 			Timeout: cfg.timeout,
@@ -142,7 +139,15 @@ func runServe(args []string) error {
 	mux.HandleFunc("POST /v1/chat/completions", proxy.handleChatCompletions)
 
 	log.Printf("codex-auth-broker listening on %s", cfg.listen)
-	log.Printf("using Codex auth file %s", cfg.authFile)
+	if len(cfg.authFiles) == 1 {
+		log.Printf("using Codex auth file %s", cfg.authFiles[0])
+	} else {
+		labels := make([]string, 0, len(pool.accounts))
+		for _, a := range pool.accounts {
+			labels = append(labels, a.label)
+		}
+		log.Printf("using %d Codex accounts with failover: %s", len(cfg.authFiles), strings.Join(labels, ", "))
+	}
 	log.Printf("upstream responses endpoint %s", cfg.upstreamURL)
 	log.Printf("dashboard available at http://%s/dashboard", cfg.listen)
 	if strings.TrimSpace(cfg.apiKey) == "" {
@@ -161,18 +166,31 @@ func runDoctor(args []string) error {
 	if err != nil {
 		return err
 	}
-	auth := &authManager{
-		authFile:    cfg.authFile,
-		refreshSkew: cfg.refreshSkew,
-		client: &http.Client{
-			Timeout: 30 * time.Second,
-		},
+	client := &http.Client{Timeout: 30 * time.Second}
+	accounts := make([]map[string]any, 0, len(cfg.authFiles))
+	overall := "ok"
+	for _, file := range cfg.authFiles {
+		auth := &authManager{authFile: file, refreshSkew: cfg.refreshSkew, client: client}
+		entry := map[string]any{
+			"auth_file":         file,
+			"auth_file_warning": authFilePermissionWarning(file),
+		}
+		access, err := auth.current(context.Background())
+		if err != nil {
+			entry["status"] = "error"
+			entry["error"] = err.Error()
+			overall = "degraded"
+		} else {
+			entry["status"] = "ok"
+			entry["account_id_present"] = access.AccountID != ""
+			entry["access_token_present"] = access.AccessToken != ""
+			entry["expires_at"] = access.ExpiresAt.UTC().Format("2006-01-02T15:04:05Z07:00")
+			entry["expires_in"] = access.ExpiresIn
+			entry["refreshed_during_doctor"] = access.Refreshed
+		}
+		accounts = append(accounts, entry)
 	}
-	access, err := auth.current(context.Background())
-	if err != nil {
-		return err
-	}
-	printDoctor(cfg, access)
+	printDoctor(cfg, overall, accounts)
 	return nil
 }
 
@@ -216,8 +234,10 @@ func loadConfig(args []string) (config, error) {
 	skewValue := cfg.refreshSkew.String()
 	timeoutValue := cfg.timeout.String()
 	modelsValue := strings.Join(cfg.models, ",")
+	authFilesValue := envOr("CODEX_AUTH_FILES", "")
 	fs.StringVar(&cfg.listen, "listen", cfg.listen, "listen address, for example 127.0.0.1:8317 or a Tailscale IP")
-	fs.StringVar(&cfg.authFile, "auth-file", cfg.authFile, "Codex auth.json path")
+	fs.StringVar(&cfg.authFile, "auth-file", cfg.authFile, "Codex auth.json path (single account)")
+	fs.StringVar(&authFilesValue, "auth-files", authFilesValue, "comma-separated Codex auth.json paths for multi-account failover (overrides --auth-file when set)")
 	fs.StringVar(&cfg.apiKey, "api-key", cfg.apiKey, "optional client-facing bearer key")
 	fs.StringVar(&cfg.apiKeyFile, "api-key-file", cfg.apiKeyFile, "optional file containing client-facing bearer key")
 	fs.StringVar(&cfg.promptCacheKey, "prompt-cache-key", cfg.promptCacheKey, "prompt_cache_key to inject when absent; empty disables injection")
@@ -240,6 +260,27 @@ func loadConfig(args []string) (config, error) {
 		return cfg, err
 	}
 	cfg.authFile = expanded
+	// Multi-account: --auth-files (or CODEX_AUTH_FILES) is a comma-separated pool
+	// that overrides --auth-file. Falls back to the single --auth-file so existing
+	// single-account setups keep working unchanged.
+	files := splitCSV(authFilesValue)
+	if len(files) == 0 {
+		files = []string{cfg.authFile}
+	}
+	seen := map[string]bool{}
+	cfg.authFiles = make([]string, 0, len(files))
+	for _, f := range files {
+		ef, err := expandPath(f)
+		if err != nil {
+			return cfg, err
+		}
+		if seen[ef] {
+			continue
+		}
+		seen[ef] = true
+		cfg.authFiles = append(cfg.authFiles, ef)
+	}
+	cfg.authFile = cfg.authFiles[0]
 	if strings.TrimSpace(cfg.apiKey) == "" && strings.TrimSpace(cfg.apiKeyFile) != "" {
 		secret, err := readSecretFile(cfg.apiKeyFile)
 		if err != nil {
@@ -283,9 +324,13 @@ Commands:
   doctor    Validate local Codex auth and print redacted status
   version   Print build metadata
 
+Multi-account failover (pool several Codex accounts; rotate on 5h/weekly limits):
+  codex-auth-broker serve --auth-files ~/.codex/auth.json,~/.codex-2/auth.json
+
 Common flags:
   --listen                 Listen address
-  --auth-file              Codex auth.json path
+  --auth-file              Codex auth.json path (single account)
+  --auth-files             Comma-separated auth.json paths for multi-account failover
   --api-key                Optional client-facing bearer key
   --api-key-file           Optional file containing client-facing bearer key
   --prompt-cache-key       Inject prompt_cache_key when clients omit it

@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"net/url"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -20,9 +21,20 @@ const maxRequestBodyBytes = 128 * 1024 * 1024
 
 type responsesProxy struct {
 	cfg      config
-	auth     *authManager
+	pool     *accountPool
 	requests *requestLogStore
 	client   *http.Client
+}
+
+// dispatchFailure describes why the failover loop could not return a usable
+// upstream response (all accounts rate-limited, auth failed, or a transport
+// error). It carries what handleResponses needs to relay to the client.
+type dispatchFailure struct {
+	status     int
+	message    string
+	body       []byte
+	retryAfter time.Time
+	window     string
 }
 
 type requestInfo struct {
@@ -38,11 +50,22 @@ type requestInfo struct {
 }
 
 func (p *responsesProxy) handleHealth(w http.ResponseWriter, _ *http.Request) {
+	now := time.Now()
+	accounts := p.pool.statuses(now)
+	availableAccounts := 0
+	for _, a := range accounts {
+		if ok, _ := a["available"].(bool); ok {
+			availableAccounts++
+		}
+	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"status":  "ok",
-		"version": version,
-		"commit":  commit,
-		"mode":    "responses-proxy",
+		"status":             "ok",
+		"version":            version,
+		"commit":             commit,
+		"mode":               "responses-proxy",
+		"accounts":           accounts,
+		"accounts_total":     len(accounts),
+		"accounts_available": availableAccounts,
 	})
 }
 
@@ -97,10 +120,15 @@ type upstreamModel struct {
 // the bare slug followed by one "slug(effort)" variant per supported reasoning
 // level. Only models with visibility "list" and supported_in_api are included.
 func (p *responsesProxy) fetchUpstreamModelIDs(ctx context.Context) ([]string, error) {
-	access, err := p.auth.current(ctx)
+	acct := p.pool.preferred(time.Now())
+	if acct == nil {
+		return nil, errors.New("no Codex accounts configured")
+	}
+	access, err := acct.mgr.current(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("Codex auth failed: %w", err)
 	}
+	acct.noteAccountID(access.AccountID)
 
 	endpoint := p.cfg.modelsURL
 	if clientVersion := strings.TrimSpace(p.cfg.modelsClientVersion); clientVersion != "" {
@@ -183,38 +211,9 @@ func (p *responsesProxy) handleResponses(w http.ResponseWriter, r *http.Request)
 		writeProxyError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
-	access, err := p.auth.current(r.Context())
-	if err != nil {
-		logEntry.markError(http.StatusBadGateway, "Codex auth failed: "+err.Error())
-		writeProxyError(w, http.StatusBadGateway, "Codex auth failed: "+err.Error())
-		return
-	}
-	req, err := http.NewRequestWithContext(r.Context(), http.MethodPost, p.cfg.upstreamURL, bytes.NewReader(encoded))
-	if err != nil {
-		logEntry.markError(http.StatusBadGateway, "build upstream request failed")
-		writeProxyError(w, http.StatusBadGateway, "build upstream request failed")
-		return
-	}
-	req.Header.Set("Authorization", "Bearer "+access.AccessToken)
-	req.Header.Set("chatgpt-account-id", access.AccountID)
-	req.Header.Set("originator", "codex-auth-broker")
-	req.Header.Set("User-Agent", "codex-auth-broker/"+valueOr(version, "dev"))
-	req.Header.Set("OpenAI-Beta", "responses=experimental")
-	req.Header.Set("Content-Type", "application/json")
-	if info.Stream {
-		req.Header.Set("Accept", "text/event-stream")
-	} else {
-		req.Header.Set("Accept", "application/json, text/event-stream")
-	}
-	if requestID := requestID(r, body); requestID != "" {
-		req.Header.Set("session_id", requestID)
-		req.Header.Set("x-client-request-id", requestID)
-	}
-
-	resp, err := p.client.Do(req)
-	if err != nil {
-		logEntry.markError(http.StatusBadGateway, "upstream request failed: "+err.Error())
-		writeProxyError(w, http.StatusBadGateway, "upstream request failed: "+err.Error())
+	resp, fail := p.dispatchUpstream(r.Context(), encoded, info, body, r)
+	if fail != nil {
+		p.writeDispatchFailure(w, logEntry, fail)
 		return
 	}
 	defer resp.Body.Close()
@@ -251,6 +250,110 @@ func (p *responsesProxy) handleResponses(w http.ResponseWriter, r *http.Request)
 	copyResponseHeaders(w, resp.Header, true)
 	w.WriteHeader(resp.StatusCode)
 	logEntry.markUsage(copyStreamingResponse(w, resp.Body))
+}
+
+// dispatchUpstream sends the (already-encoded, stream=true) responses request,
+// rotating to the next available account whenever an account returns 429. It
+// returns a usable *http.Response for any non-429 status (success or an error
+// the caller relays as-is), or a dispatchFailure when no account could serve the
+// request. The response body is the caller's to close.
+func (p *responsesProxy) dispatchUpstream(ctx context.Context, encoded []byte, info requestInfo, body map[string]any, r *http.Request) (*http.Response, *dispatchFailure) {
+	n := p.pool.size()
+	if n == 0 {
+		return nil, &dispatchFailure{status: http.StatusBadGateway, message: "no Codex accounts configured"}
+	}
+	var lastRateLimit *dispatchFailure
+	var lastAuthErr error
+	for attempt := 0; attempt < n; attempt++ {
+		acct, err := p.pool.pick(time.Now())
+		if err != nil {
+			break // every account is cooling down
+		}
+		access, err := acct.mgr.current(ctx)
+		if err != nil {
+			acct.cool(time.Now().Add(authErrorCooldown), "auth error: "+err.Error())
+			lastAuthErr = err
+			log.Printf("codex account %s auth failed: %v; rotating", acct.label, err)
+			continue
+		}
+		acct.noteAccountID(access.AccountID)
+		req, err := p.buildUpstreamRequest(ctx, encoded, info, body, r, access)
+		if err != nil {
+			return nil, &dispatchFailure{status: http.StatusBadGateway, message: "build upstream request failed"}
+		}
+		resp, err := p.client.Do(req)
+		if err != nil {
+			// Transport failure is not a rate limit; surface it rather than
+			// burning other accounts on what is likely a broker-side problem.
+			return nil, &dispatchFailure{status: http.StatusBadGateway, message: "upstream request failed: " + err.Error()}
+		}
+		if resp.StatusCode == http.StatusTooManyRequests {
+			rlBody, _ := io.ReadAll(io.LimitReader(resp.Body, 64*1024))
+			resp.Body.Close()
+			until, window, source := deriveCooldown(resp, rlBody, time.Now())
+			acct.cool(until, window)
+			log.Printf("codex account %s hit rate limit window=%s source=%s cooling_until=%s; rotating (%d/%d)",
+				acct.label, window, source, until.UTC().Format(time.RFC3339), attempt+1, n)
+			lastRateLimit = &dispatchFailure{status: http.StatusTooManyRequests, body: rlBody, retryAfter: until, window: window}
+			continue
+		}
+		return resp, nil
+	}
+
+	if lastRateLimit != nil {
+		if soonest := p.pool.soonestReset(time.Now()); !soonest.IsZero() {
+			lastRateLimit.retryAfter = soonest
+		}
+		log.Printf("codex all %d accounts rate-limited; next reset %s", n, lastRateLimit.retryAfter.UTC().Format(time.RFC3339))
+		return nil, lastRateLimit
+	}
+	if lastAuthErr != nil {
+		return nil, &dispatchFailure{status: http.StatusBadGateway, message: "Codex auth failed: " + lastAuthErr.Error()}
+	}
+	return nil, &dispatchFailure{status: http.StatusTooManyRequests, message: "all Codex accounts are rate-limited", retryAfter: p.pool.soonestReset(time.Now())}
+}
+
+func (p *responsesProxy) buildUpstreamRequest(ctx context.Context, encoded []byte, info requestInfo, body map[string]any, r *http.Request, access accessMaterial) (*http.Request, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, p.cfg.upstreamURL, bytes.NewReader(encoded))
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Authorization", "Bearer "+access.AccessToken)
+	req.Header.Set("chatgpt-account-id", access.AccountID)
+	req.Header.Set("originator", "codex-auth-broker")
+	req.Header.Set("User-Agent", "codex-auth-broker/"+valueOr(version, "dev"))
+	req.Header.Set("OpenAI-Beta", "responses=experimental")
+	req.Header.Set("Content-Type", "application/json")
+	if info.Stream {
+		req.Header.Set("Accept", "text/event-stream")
+	} else {
+		req.Header.Set("Accept", "application/json, text/event-stream")
+	}
+	if id := requestID(r, body); id != "" {
+		req.Header.Set("session_id", id)
+		req.Header.Set("x-client-request-id", id)
+	}
+	return req, nil
+}
+
+func (p *responsesProxy) writeDispatchFailure(w http.ResponseWriter, logEntry *pendingRequestLog, fail *dispatchFailure) {
+	if !fail.retryAfter.IsZero() {
+		if secs := int(time.Until(fail.retryAfter).Seconds()); secs > 0 {
+			w.Header().Set("Retry-After", strconv.Itoa(secs))
+		}
+	}
+	detail := fail.message
+	if detail == "" {
+		detail = summarizeUpstreamError(fail.body, fail.status)
+	}
+	logEntry.markError(fail.status, detail)
+	if len(bytes.TrimSpace(fail.body)) > 0 {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(fail.status)
+		_, _ = w.Write([]byte(redactTokenLikeText(string(fail.body))))
+		return
+	}
+	writeProxyError(w, fail.status, valueOr(detail, fmt.Sprintf("upstream returned %d", fail.status)))
 }
 
 func (p *responsesProxy) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
