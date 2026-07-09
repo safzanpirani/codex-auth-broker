@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -52,10 +53,15 @@ func (p *responsesProxy) handleCodexUsage(w http.ResponseWriter, r *http.Request
 }
 
 func (p *responsesProxy) fetchCodexUsage(ctx context.Context) (map[string]any, int, error) {
-	access, err := p.auth.current(ctx)
+	acct := p.pool.preferred(time.Now())
+	if acct == nil {
+		return nil, http.StatusBadGateway, errors.New("no Codex accounts configured")
+	}
+	access, err := acct.mgr.current(ctx)
 	if err != nil {
 		return nil, http.StatusBadGateway, fmt.Errorf("Codex auth failed: %w", err)
 	}
+	acct.noteAccountID(access.AccountID)
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, p.cfg.usageURL, nil)
 	if err != nil {
 		return nil, http.StatusBadGateway, fmt.Errorf("build usage request failed: %w", err)

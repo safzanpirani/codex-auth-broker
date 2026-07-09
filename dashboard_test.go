@@ -47,12 +47,8 @@ func TestFetchCodexUsageUsesLocalAccessAuth(t *testing.T) {
 	defer server.Close()
 
 	proxy := &responsesProxy{
-		cfg: config{usageURL: server.URL},
-		auth: &authManager{
-			authFile:    authFile,
-			refreshSkew: time.Minute,
-			client:      server.Client(),
-		},
+		cfg:    config{usageURL: server.URL},
+		pool:   newAccountPool([]string{authFile}, time.Minute, server.Client()),
 		client: server.Client(),
 	}
 	usage, status, err := proxy.fetchCodexUsage(context.Background())
