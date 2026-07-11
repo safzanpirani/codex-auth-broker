@@ -68,7 +68,7 @@ func (p *responsesProxy) fetchCodexUsage(ctx context.Context) (map[string]any, i
 	}
 	req.Header.Set("Authorization", "Bearer "+access.AccessToken)
 	req.Header.Set("Accept", "application/json")
-	req.Header.Set("User-Agent", "codex-auth-broker/"+valueOr(version, "dev"))
+	p.setClientIdentity(req)
 	if access.AccountID != "" {
 		req.Header.Set("ChatGPT-Account-Id", access.AccountID)
 	}

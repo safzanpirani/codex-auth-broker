@@ -144,8 +144,7 @@ func (p *responsesProxy) fetchUpstreamModelIDs(ctx context.Context) ([]string, e
 	}
 	req.Header.Set("Authorization", "Bearer "+access.AccessToken)
 	req.Header.Set("chatgpt-account-id", access.AccountID)
-	req.Header.Set("originator", "codex-auth-broker")
-	req.Header.Set("User-Agent", "codex-auth-broker/"+valueOr(version, "dev"))
+	p.setClientIdentity(req)
 	req.Header.Set("OpenAI-Beta", "responses=experimental")
 	req.Header.Set("Accept", "application/json")
 
@@ -322,8 +321,7 @@ func (p *responsesProxy) buildUpstreamRequest(ctx context.Context, encoded []byt
 	}
 	req.Header.Set("Authorization", "Bearer "+access.AccessToken)
 	req.Header.Set("chatgpt-account-id", access.AccountID)
-	req.Header.Set("originator", "codex-auth-broker")
-	req.Header.Set("User-Agent", "codex-auth-broker/"+valueOr(version, "dev"))
+	p.setClientIdentity(req)
 	req.Header.Set("OpenAI-Beta", "responses=experimental")
 	req.Header.Set("Content-Type", "application/json")
 	if info.Stream {
@@ -489,6 +487,22 @@ func normalizeFactoryModel(raw string) (string, string) {
 		model = "gpt-" + strings.TrimPrefix(model, "GPT-")
 	}
 	return model, effort
+}
+
+// setClientIdentity sets the originator and User-Agent headers on upstream
+// requests. Some models (e.g. gpt-5.6-luna) are allowlisted by originator and
+// 404 for anything but the official CLI's identity.
+func (p *responsesProxy) setClientIdentity(req *http.Request) {
+	originator := strings.TrimSpace(p.cfg.upstreamOriginator)
+	if originator == "" {
+		originator = "codex-auth-broker"
+	}
+	req.Header.Set("originator", originator)
+	if originator == "codex-auth-broker" {
+		req.Header.Set("User-Agent", "codex-auth-broker/"+valueOr(version, "dev"))
+	} else {
+		req.Header.Set("User-Agent", originator+"/"+p.cfg.modelsClientVersion)
+	}
 }
 
 func normalizeReasoningEffort(value string) string {

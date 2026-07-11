@@ -26,6 +26,10 @@ const (
 	// list on this value (older versions return an empty list), so we send a
 	// high version to receive the full catalog.
 	defaultModelsClientVersion = "2.0.0"
+	// defaultUpstreamOriginator identifies the client to the Codex backend.
+	// Some models (e.g. gpt-5.6-luna) are allowlisted to the official CLI's
+	// originator and 404 for anything else, so we present as codex_cli_rs.
+	defaultUpstreamOriginator = "codex_cli_rs"
 	defaultInstructions        = "You are a helpful coding assistant."
 	defaultRequestLogLimit     = 1000
 )
@@ -48,6 +52,7 @@ type config struct {
 	upstreamURL          string
 	modelsURL            string
 	modelsClientVersion  string
+	upstreamOriginator   string
 	usageURL             string
 	models               []string
 	timeout              time.Duration
@@ -205,6 +210,7 @@ func loadConfig(args []string) (config, error) {
 		upstreamURL:          envOr("CODEX_AUTH_BROKER_UPSTREAM_RESPONSES_URL", defaultUpstreamURL),
 		modelsURL:            envOr("CODEX_AUTH_BROKER_MODELS_URL", defaultModelsURL),
 		modelsClientVersion:  envOr("CODEX_AUTH_BROKER_MODELS_CLIENT_VERSION", defaultModelsClientVersion),
+		upstreamOriginator:   envOr("CODEX_AUTH_BROKER_UPSTREAM_ORIGINATOR", defaultUpstreamOriginator),
 		usageURL:             envOr("CODEX_AUTH_BROKER_USAGE_URL", defaultUsageURL),
 		refreshSkew:          defaultRefreshSkew,
 		models:               nil,
@@ -245,6 +251,7 @@ func loadConfig(args []string) (config, error) {
 	fs.StringVar(&cfg.upstreamURL, "upstream-responses-url", cfg.upstreamURL, "ChatGPT Codex Responses endpoint")
 	fs.StringVar(&cfg.modelsURL, "models-url", cfg.modelsURL, "ChatGPT Codex models endpoint proxied by /v1/models")
 	fs.StringVar(&cfg.usageURL, "usage-url", cfg.usageURL, "ChatGPT Codex usage endpoint")
+	fs.StringVar(&cfg.upstreamOriginator, "upstream-originator", cfg.upstreamOriginator, "originator header sent to Codex upstream; some models are gated to codex_cli_rs")
 	fs.StringVar(&modelsValue, "models", modelsValue, "comma-separated model ids to serve statically from /v1/models; empty proxies the live Codex model list")
 	fs.StringVar(&skewValue, "refresh-skew", skewValue, "refresh access token when it expires within this duration")
 	fs.StringVar(&timeoutValue, "timeout", timeoutValue, "upstream request timeout")
