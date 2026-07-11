@@ -18,6 +18,10 @@ func TestNormalizeFactoryModel(t *testing.T) {
 		{input: "gpt-5.5 (xhigh)", model: "gpt-5.5", effort: "xhigh"},
 		{input: "openai-codex/gpt-5.4(high)", model: "gpt-5.4", effort: "high"},
 		{input: "custom:GPT-5.5-medium", model: "gpt-5.5", effort: "medium"},
+		{input: "gpt-5.6-sol(max)", model: "gpt-5.6-sol", effort: "max"},
+		{input: "gpt-5.6-sol(ultra)", model: "gpt-5.6-sol", effort: "max"},
+		{input: "gpt-5.6-terra-ultra", model: "gpt-5.6-terra", effort: "max"},
+		{input: "gpt-5.6-luna-max", model: "gpt-5.6-luna", effort: "max"},
 	}
 	for _, test := range tests {
 		model, effort := normalizeFactoryModel(test.input)

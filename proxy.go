@@ -154,7 +154,7 @@ func (p *responsesProxy) fetchUpstreamModelIDs(ctx context.Context) ([]string, e
 		return nil, fmt.Errorf("upstream request failed: %w", err)
 	}
 	defer resp.Body.Close()
-	body, _ := io.ReadAll(io.LimitReader(resp.Body, 256*1024))
+	body, _ := io.ReadAll(io.LimitReader(resp.Body, 4*1024*1024))
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return nil, fmt.Errorf("upstream returned %d: %s", resp.StatusCode, summarizeUpstreamError(body, resp.StatusCode))
 	}
@@ -172,8 +172,10 @@ func (p *responsesProxy) fetchUpstreamModelIDs(ctx context.Context) ([]string, e
 			continue
 		}
 		ids = append(ids, m.Slug)
+		seen := map[string]bool{}
 		for _, level := range m.SupportedReasoningLevels {
-			if effort := normalizeReasoningEffort(level.Effort); effort != "" {
+			if effort := normalizeReasoningEffort(level.Effort); effort != "" && !seen[effort] {
+				seen[effort] = true
 				ids = append(ids, m.Slug+"("+effort+")")
 			}
 		}
@@ -476,9 +478,9 @@ func normalizeFactoryModel(raw string) (string, string) {
 		}
 	}
 	lower := strings.ToLower(model)
-	for _, suffix := range []string{"-xhigh", "-high", "-medium", "-low"} {
+	for _, suffix := range []string{"-ultra", "-xhigh", "-high", "-medium", "-low", "-max"} {
 		if strings.HasSuffix(lower, suffix) {
-			effort = strings.TrimPrefix(suffix, "-")
+			effort = normalizeReasoningEffort(strings.TrimPrefix(suffix, "-"))
 			model = strings.TrimSpace(model[:len(model)-len(suffix)])
 			break
 		}
@@ -493,10 +495,13 @@ func normalizeReasoningEffort(value string) string {
 	switch strings.ToLower(strings.TrimSpace(value)) {
 	case "minimal":
 		return "low"
-	case "low", "medium", "high", "xhigh":
+	case "low", "medium", "high", "xhigh", "max":
 		return strings.ToLower(strings.TrimSpace(value))
-	case "max":
-		return "xhigh"
+	case "ultra":
+		// The Codex catalog advertises "ultra" on gpt-5.6 models, but the
+		// responses endpoint rejects it on the wire — it is a client-side
+		// delegation mode layered on top of "max".
+		return "max"
 	default:
 		return ""
 	}

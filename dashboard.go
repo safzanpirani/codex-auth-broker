@@ -269,6 +269,7 @@ const dashboardHTML = `<!doctype html>
     .badge.effort-medium{color:var(--blue);border-color:var(--s1);}
     .badge.effort-high{color:var(--yellow);border-color:var(--s1);}
     .badge.effort-xhigh{color:var(--red);border-color:var(--s1);}
+    .badge.effort-max{color:var(--red);border-color:var(--red);}
     .badge.tier-priority{color:var(--yellow);border-color:var(--s1);}
     .badge.cache{color:var(--green);border-color:var(--s1);}
 
