@@ -26,13 +26,15 @@ gpt-5.5(low)
 gpt-5.5(medium)
 gpt-5.5(high)
 gpt-5.5(xhigh)
+gpt-5.6-sol(max)
 gpt-5.4
 gpt-5.4-mini
 gpt-5.3-codex
 ```
 
 The suffix is converted to `reasoning.effort` before the request is sent to
-Codex.
+Codex. The gpt-5.6 family additionally supports `(max)`; `(ultra)` is accepted
+as an alias and forwarded as `max` (the backend rejects wire-level `ultra`).
 
 ## Prompt Cache Check
 

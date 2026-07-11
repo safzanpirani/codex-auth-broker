@@ -126,6 +126,11 @@ Compatibility normalizations:
   `reasoning.effort: "low"`.
 - `gpt-5.4-mini(high)` becomes `model: "gpt-5.4-mini"` and
   `reasoning.effort: "high"`.
+- `gpt-5.6-sol(max)` becomes `model: "gpt-5.6-sol"` and
+  `reasoning.effort: "max"` (gpt-5.6 family only; older models reject `max`).
+- `gpt-5.6-sol(ultra)` is forwarded as `reasoning.effort: "max"` — the Codex
+  backend rejects wire-level `ultra`; in the official CLI it means max effort
+  plus client-side proactive multi-agent delegation.
 - `gpt-5.3-codex` is advertised by `/v1/models` and forwards as
   `model: "gpt-5.3-codex"`.
 - Native client reasoning, such as Pi sending `reasoning.effort`, is preserved

@@ -71,10 +71,14 @@ gpt-5.5(low)
 gpt-5.5(medium)
 gpt-5.5(high)
 gpt-5.5(xhigh)
+gpt-5.6-sol(max)
 gpt-5.4
 gpt-5.4-mini
 gpt-5.3-codex
 ```
+
+Effort suffixes accept `low`/`medium`/`high`/`xhigh`, plus `max` on the
+gpt-5.6 family (`ultra` is accepted as an alias and forwarded as `max`).
 
 The API key can be any dummy value unless you start the broker with
 `--api-key`.

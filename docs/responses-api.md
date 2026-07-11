@@ -105,6 +105,7 @@ gpt-5.5(low)
 gpt-5.5(medium)
 gpt-5.5(high)
 gpt-5.5(xhigh)
+gpt-5.6-sol(max)
 gpt-5.4
 gpt-5.4-mini
 gpt-5.3-codex
@@ -164,7 +165,7 @@ Models endpoint: GET http://127.0.0.1:8317/v1/models
 Dashboard: http://127.0.0.1:8317/dashboard
 API key: dummy, unless the broker owner gives you a real local broker key
 Primary model: gpt-5.5
-Reasoning: omit reasoning for off/default, or send reasoning.effort low/medium/high/xhigh
+Reasoning: omit reasoning for off/default, or send reasoning.effort low/medium/high/xhigh (gpt-5.6 also accepts max)
 Prompt cache key: use a stable project key, for example "safzan-coding-agent"
 
 Do not use /v1/chat/completions. Use /v1/responses only.
@@ -237,7 +238,15 @@ low
 medium
 high
 xhigh
+max    (gpt-5.6 family only; gpt-5.4 and older reject it)
+ultra  (alias for max; wire-level "ultra" does not exist)
 ```
+
+`ultra` is accepted for convenience but is forwarded as `max`: the Codex
+Responses endpoint rejects `reasoning.effort: "ultra"` even though the model
+catalog advertises it. In the official Codex CLI, ultra maps to `max` on the
+wire and additionally enables proactive multi-agent task delegation — a
+client-side behavior the broker does not replicate.
 
 ## Streaming
 
