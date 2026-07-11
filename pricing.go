@@ -18,6 +18,9 @@ type modelPricing struct {
 // Costs are estimates of equivalent API spend; ChatGPT-plan requests are not
 // actually billed per token.
 var defaultModelPricing = map[string]modelPricing{
+	"gpt-5.6-sol":   {InputPerM: 5.00, CachedPerM: 0.50, OutputPerM: 30.00},
+	"gpt-5.6-terra": {InputPerM: 2.50, CachedPerM: 0.25, OutputPerM: 15.00},
+	"gpt-5.6-luna":  {InputPerM: 1.00, CachedPerM: 0.10, OutputPerM: 6.00},
 	"gpt-5.5":       {InputPerM: 5.00, CachedPerM: 0.50, OutputPerM: 30.00},
 	"gpt-5.4":       {InputPerM: 2.50, CachedPerM: 0.25, OutputPerM: 15.00},
 	"gpt-5.4-mini":  {InputPerM: 0.75, CachedPerM: 0.075, OutputPerM: 4.50},

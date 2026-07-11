@@ -47,6 +47,20 @@ func TestLookupModelPricingPrefersLongestPrefix(t *testing.T) {
 	}
 }
 
+func TestLookupModelPricingGPT56(t *testing.T) {
+	cases := map[string]float64{
+		"gpt-5.6-sol":   5.00,
+		"gpt-5.6-terra": 2.50,
+		"gpt-5.6-luna":  1.00,
+	}
+	for model, wantInput := range cases {
+		pricing, ok := lookupModelPricing(defaultModelPricing, model)
+		if !ok || pricing.InputPerM != wantInput {
+			t.Fatalf("%s: got %+v ok=%t, want InputPerM=%v", model, pricing, ok, wantInput)
+		}
+	}
+}
+
 func TestRequestLogPersistenceRoundTrip(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "nested", "requests.jsonl")
 	persist, err := openRequestLogFile(path)
