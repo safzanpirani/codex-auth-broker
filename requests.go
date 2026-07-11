@@ -97,6 +97,19 @@ func (s *requestLogStore) restore(entries []requestLogEntry, maxID int64) {
 	if extra := len(entries) - s.limit; extra > 0 {
 		entries = entries[extra:]
 	}
+	// Backfill costs for entries persisted before their model was priced (or
+	// with a stale price): recompute from the stored token counts.
+	for i := range entries {
+		if entries[i].CostUSD != nil {
+			continue
+		}
+		model := valueOr(entries[i].NormalizedModel, entries[i].Model)
+		entries[i].CostUSD = estimateCostUSD(s.pricing, model, tokenUsage{
+			InputTokens:  entries[i].InputTokens,
+			OutputTokens: entries[i].OutputTokens,
+			CachedTokens: entries[i].CachedTokens,
+		})
+	}
 	s.entries = append(s.entries, entries...)
 	if maxID > s.nextID {
 		s.nextID = maxID

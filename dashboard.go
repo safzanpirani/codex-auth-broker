@@ -652,7 +652,7 @@ const dashboardHTML = `<!doctype html>
 
       async function loadRequests() {
         try {
-          const snapshot = await fetchJSON("/dashboard/api/requests?limit=250");
+          const snapshot = await fetchJSON("/dashboard/api/requests?limit=0");
           state.snapshot = snapshot;
           state.requests = snapshot.requests || [];
           $("requestCount").textContent = (snapshot.total_seen || 0).toLocaleString();
