@@ -153,8 +153,10 @@ Compatibility normalizations:
 ## Responses WebSocket
 
 `GET /v1/responses` with a standard WebSocket Upgrade uses the Responses
-WebSocket protocol. Use the same client-facing bearer key as the HTTP endpoint
-and include:
+WebSocket protocol. `/v1/codex/responses` is an equivalent GET/POST alias for
+clients such as Pi that append `/codex/responses` to their configured `/v1`
+base URL. Use the same client-facing bearer key as the HTTP endpoint and
+include:
 
 ```text
 OpenAI-Beta: responses_websockets=2026-02-06

@@ -142,6 +142,8 @@ func runServe(args []string) error {
 	mux.HandleFunc("GET /v1/models", proxy.handleModels)
 	mux.HandleFunc("GET /v1/responses", proxy.handleResponsesWebSocket)
 	mux.HandleFunc("POST /v1/responses", proxy.handleResponses)
+	mux.HandleFunc("GET /v1/codex/responses", proxy.handleResponsesWebSocket)
+	mux.HandleFunc("POST /v1/codex/responses", proxy.handleResponses)
 	mux.HandleFunc("POST /v1/chat/completions", proxy.handleChatCompletions)
 
 	log.Printf("codex-auth-broker listening on %s", cfg.listen)

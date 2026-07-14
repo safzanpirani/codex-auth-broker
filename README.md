@@ -24,6 +24,7 @@ internet.
   - `GET /v1/models`
   - `GET /v1/responses` (Responses WebSocket upgrade)
   - `POST /v1/responses`
+  - `GET` / `POST /v1/codex/responses` (Pi Codex transport alias)
 - Supports Responses-over-WebSocket, HTTP SSE streaming, and non-streaming
   Responses clients.
 - Normalizes Factory model names like `gpt-5.5(medium)`.

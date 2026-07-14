@@ -283,6 +283,9 @@ and forwards Codex turn-state headers/events, so compatible clients can send
 only newly added input items on later turns. The broker normalizes each
 `response.create` just like an HTTP request.
 
+Pi's `openai-codex-responses` adapter may instead connect to
+`ws://127.0.0.1:8317/v1/codex/responses`; that path is an equivalent alias.
+
 The upstream limits a WebSocket connection to 60 minutes. Reconnect after
 `websocket_connection_limit_reached`, and reconnect after a rate-limit event so
 multi-account failover can select another account.
