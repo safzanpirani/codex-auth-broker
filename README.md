@@ -224,9 +224,16 @@ static HTML so the browser can load the page before you enter the key.
 
 ## Pi Coding Agent
 
-Pi can use this as a custom `openai-responses` provider. Configure the provider
-with `baseUrl: "http://127.0.0.1:8317/v1"`, `api: "openai-responses"`, and
-`authHeader: true`.
+Pi can use HTTP, WebSocket, or cached WebSocket transport. For WebSocket support,
+configure the provider with `api: "openai-codex-responses"`; Pi then uses the
+broker's `/v1/codex/responses` compatibility alias. Set `transport` to
+`"websocket-cached"` in `~/.pi/agent/settings.json` to reuse a socket and send
+only newly added conversation items after the first turn.
+
+Pi's Codex adapter requires its client credential to look like a JWT, even when
+the broker has client authentication disabled. See the complete configuration,
+credential-generation, Tailscale, verification, and troubleshooting guide in
+[`docs/pi-coding-agent.md`](docs/pi-coding-agent.md).
 
 Recommended model ids:
 
