@@ -106,6 +106,10 @@ also scanning SSE `data:` frames for the final response usage object. If the
 client disconnects early or the upstream stream does not include usage, token
 fields are omitted for that row.
 
+Responses WebSocket turns are recorded the same way with `method: "WS"`. The
+broker inspects only `response.create` metadata and final usage/error events;
+prompt text, completion text, full frames, and bearer tokens are not retained.
+
 ## `DELETE /dashboard/api/requests`
 
 Clears retained request history. The lifetime `total_seen` counter is not
@@ -145,6 +149,43 @@ Compatibility normalizations:
   backend rejects them.
 - Non-streaming requests are implemented by forcing upstream streaming and
   aggregating the final SSE response.
+
+## Responses WebSocket
+
+`GET /v1/responses` with a standard WebSocket Upgrade uses the Responses
+WebSocket protocol. Use the same client-facing bearer key as the HTTP endpoint
+and include:
+
+```text
+OpenAI-Beta: responses_websockets=2026-02-06
+```
+
+The broker also adds that beta token when it is absent. It accepts JSON
+`response.create` client events and forwards Responses server events. Every
+`response.create` receives the same model-name, reasoning, input, default, and
+unsupported-field normalization as `POST /v1/responses`.
+
+The following Codex protocol headers are passed through the opening handshake:
+
+- `x-codex-turn-state`
+- `x-models-etag`
+- `x-reasoning-included`
+- `openai-model`
+
+Turn state included in later server events is forwarded unchanged. This allows
+compatible clients to reuse a connection and send incremental input with
+`previous_response_id` rather than resending the complete conversation.
+
+WebSocket connections are pinned to the account selected at handshake time. A
+handshake `429` rotates to the next account before the downstream upgrade
+completes. A `429` server event on an established connection is delivered to
+the client, then the broker closes the socket and cools that account; reconnect
+to select the next account. The broker does not replay an in-flight turn.
+
+The upstream currently enforces a 60-minute connection limit and sends
+`websocket_connection_limit_reached`; clients must reconnect. WebSocket clients
+should also retain enough logical conversation state to retry without
+`previous_response_id` if a new account cannot resolve the old response ID.
 
 ## `POST /v1/chat/completions`
 

@@ -13,6 +13,12 @@ Responses backend with short-lived access auth.
 Clients only talk to the OpenAI-compatible `/v1/responses` surface and local
 dashboard APIs. They do not receive the access token or refresh token.
 
+For Responses WebSockets, the broker terminates the client connection and
+opens a separate upstream connection. Client authorization is checked before
+the upgrade, Codex OAuth is injected only into the upstream handshake, and
+access/refresh tokens are never placed in WebSocket frames or downstream
+headers.
+
 ## Recommendations
 
 - Bind to `127.0.0.1` by default.

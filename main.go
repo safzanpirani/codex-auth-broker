@@ -30,8 +30,8 @@ const (
 	// Some models (e.g. gpt-5.6-luna) are allowlisted to the official CLI's
 	// originator and 404 for anything else, so we present as codex_cli_rs.
 	defaultUpstreamOriginator = "codex_cli_rs"
-	defaultInstructions        = "You are a helpful coding assistant."
-	defaultRequestLogLimit     = 1000
+	defaultInstructions       = "You are a helpful coding assistant."
+	defaultRequestLogLimit    = 1000
 )
 
 var (
@@ -140,6 +140,7 @@ func runServe(args []string) error {
 	mux.HandleFunc("GET /usage", proxy.handleCodexUsage)
 	mux.HandleFunc("GET /healthz", proxy.handleHealth)
 	mux.HandleFunc("GET /v1/models", proxy.handleModels)
+	mux.HandleFunc("GET /v1/responses", proxy.handleResponsesWebSocket)
 	mux.HandleFunc("POST /v1/responses", proxy.handleResponses)
 	mux.HandleFunc("POST /v1/chat/completions", proxy.handleChatCompletions)
 

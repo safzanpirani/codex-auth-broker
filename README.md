@@ -22,8 +22,10 @@ internet.
   - `GET /dashboard/api/usage`
   - `GET /dashboard/api/requests`
   - `GET /v1/models`
+  - `GET /v1/responses` (Responses WebSocket upgrade)
   - `POST /v1/responses`
-- Supports streaming and non-streaming Responses clients.
+- Supports Responses-over-WebSocket, HTTP SSE streaming, and non-streaming
+  Responses clients.
 - Normalizes Factory model names like `gpt-5.5(medium)`.
 - Preserves or injects `prompt_cache_key` for model-side prompt caching.
 - Strips OpenAI SDK compatibility fields that the Codex backend rejects.
@@ -128,6 +130,11 @@ curl -sS http://127.0.0.1:8317/v1/responses \
 For copy-paste examples covering model ids, reasoning levels, streaming, image
 input, and custom provider configuration, see
 [`docs/responses-api.md`](docs/responses-api.md).
+
+Responses WebSocket clients can use the same base URL and bearer key. The
+broker implements the `responses_websockets=2026-02-06` protocol, forwards
+Codex turn-state/model handshake headers, and applies the same model and request
+normalization as the HTTP endpoint. See [`docs/api.md`](docs/api.md#responses-websocket).
 
 Doctor:
 
@@ -345,6 +352,12 @@ falls back on the response wording — "weekly" → 7 days, a usage/5-hour limit
 **When every account is cooling down.** The broker returns `429` with a
 `Retry-After` header pointing at the soonest reset across the pool.
 
+For WebSockets, account selection is pinned for the life of a connection. A
+`429` during the opening handshake rotates transparently. A `429` event after
+the socket is established is forwarded to the client, the account is cooled,
+and the socket is closed so a reconnect can select the next account; an
+in-flight turn is never replayed automatically across accounts.
+
 **Observability.** `/healthz` lists each account with its availability and
 cooldown; `doctor --auth-files ...` validates every login; and each rotation
 logs a line like:
@@ -378,6 +391,8 @@ If you bind to anything other than localhost, set `--api-key` or
 ## Limitations
 
 - `/v1/chat/completions` intentionally returns HTTP 501 for now.
+- Responses WebSocket connections inherit the upstream 60-minute connection
+  limit. Clients must reconnect after `websocket_connection_limit_reached`.
 - This is not a full OpenAI API clone.
 - The Codex backend is not a public stability contract; compatibility can
   change when Codex changes.

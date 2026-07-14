@@ -267,6 +267,26 @@ The broker forwards Server-Sent Events from the Codex backend. The dashboard
 also scans streaming responses for final usage when the upstream stream includes
 it.
 
+## Responses WebSocket
+
+WebSocket-capable Responses clients use the same base URL. Connect to
+`ws://127.0.0.1:8317/v1/responses` (or `wss://` when TLS terminates in front of
+the broker), authenticate with the same bearer key, and negotiate:
+
+```text
+OpenAI-Beta: responses_websockets=2026-02-06
+```
+
+Send Responses client events such as `response.create`; the broker returns
+Responses server events on the same socket. It preserves `previous_response_id`
+and forwards Codex turn-state headers/events, so compatible clients can send
+only newly added input items on later turns. The broker normalizes each
+`response.create` just like an HTTP request.
+
+The upstream limits a WebSocket connection to 60 minutes. Reconnect after
+`websocket_connection_limit_reached`, and reconnect after a rate-limit event so
+multi-account failover can select another account.
+
 Streaming agent request:
 
 ```bash

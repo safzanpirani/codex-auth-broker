@@ -94,6 +94,13 @@ same request is retried on the next available account. The client sees no error
 — just a slightly slower response for the one request that triggered the
 rotation.
 
+For Responses WebSockets, the selected account remains pinned for the socket's
+lifetime. A `429` opening handshake rotates transparently. If an established
+socket receives a `429` server event, the broker forwards the event, benches
+that account, and closes the socket so the client's reconnect selects another
+account. It does not replay the in-flight `response.create` across accounts,
+because response IDs and turn state may not be portable between accounts.
+
 **Cooldown deadline.** The bench time prefers an explicit reset from the `429`,
 in this order:
 
