@@ -468,9 +468,10 @@ func normalizeResponsesBody(body map[string]any, cfg config, r *http.Request) re
 	if stream, ok := body["stream"].(bool); ok {
 		info.Stream = stream
 	}
-	// Fall back to a conversation-stable key so the backend's 24h prompt cache
-	// is actually reused across turns. Codex itself keys on the thread id; a
-	// per-request id here would rotate the key every call and defeat caching.
+	// Fall back to a conversation-stable key so ordinary upstream prompt-cache
+	// affinity can be reused across turns. A per-request id here would rotate the
+	// key every call and defeat prefix matching. The ChatGPT Codex endpoint does
+	// not accept the public API's cache-retention options.
 	if stableKey != "" && !info.PromptCacheKeySet {
 		body["prompt_cache_key"] = stableKey
 		info.PromptCacheKeySet = true
@@ -608,6 +609,8 @@ func removeUnsupportedParams(body map[string]any) {
 	delete(body, "maxCompletionTokens")
 	delete(body, "prompt_cache_retention")
 	delete(body, "promptCacheRetention")
+	delete(body, "prompt_cache_options")
+	delete(body, "promptCacheOptions")
 	// session/conversation ids are captured for prompt_cache_key derivation, but
 	// the Codex backend 400s on them ("Unsupported parameter: conversation_id").
 	delete(body, "session_id")

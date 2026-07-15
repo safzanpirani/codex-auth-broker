@@ -157,9 +157,12 @@ By default:
 prompt_cache_key = factory-droid
 ```
 
-Factory Droid `0.122` can send `prompt_cache_retention: "24h"` through the
-OpenAI SDK path. The Codex backend currently rejects that request field, so the
-proxy strips it and relies on `prompt_cache_key` for cache affinity.
+The public OpenAI Responses API exposes cache-retention controls. The ChatGPT
+Codex OAuth endpoint used by this broker is a different backend and currently
+rejects both the legacy `prompt_cache_retention` field and the newer
+`prompt_cache_options` object. The broker therefore strips those controls and
+relies on `prompt_cache_key` for ordinary cache affinity. It cannot force a
+24-hour cache lifetime for ChatGPT-plan traffic.
 
 Cache hits are visible in Responses usage as:
 
@@ -308,7 +311,7 @@ Flags and equivalent environment variables:
 | `--api-key` | `CODEX_AUTH_BROKER_API_KEY` | empty |
 | `--api-key-file` | `CODEX_AUTH_BROKER_API_KEY_FILE` | empty |
 | `--prompt-cache-key` | `CODEX_AUTH_BROKER_PROMPT_CACHE_KEY` | `factory-droid` |
-| `--prompt-cache-retention` | `CODEX_AUTH_BROKER_PROMPT_CACHE_RETENTION` | accepted for compatibility but not forwarded |
+| `--prompt-cache-retention` | `CODEX_AUTH_BROKER_PROMPT_CACHE_RETENTION` | records legacy client intent for compatibility; never forwarded |
 | `--usage-url` | `CODEX_AUTH_BROKER_USAGE_URL` | ChatGPT wham usage endpoint |
 | `--models-url` | `CODEX_AUTH_BROKER_MODELS_URL` | ChatGPT Codex models endpoint |
 | n/a | `CODEX_AUTH_BROKER_MODELS_CLIENT_VERSION` | `2.0.0` (`client_version` sent to the Codex models endpoint) |

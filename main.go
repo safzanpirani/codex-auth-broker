@@ -250,7 +250,7 @@ func loadConfig(args []string) (config, error) {
 	fs.StringVar(&cfg.apiKey, "api-key", cfg.apiKey, "optional client-facing bearer key")
 	fs.StringVar(&cfg.apiKeyFile, "api-key-file", cfg.apiKeyFile, "optional file containing client-facing bearer key")
 	fs.StringVar(&cfg.promptCacheKey, "prompt-cache-key", cfg.promptCacheKey, "prompt_cache_key to inject when absent; empty disables injection")
-	fs.StringVar(&cfg.promptCacheRetention, "prompt-cache-retention", cfg.promptCacheRetention, "prompt_cache_retention to inject when absent: in_memory or 24h")
+	fs.StringVar(&cfg.promptCacheRetention, "prompt-cache-retention", cfg.promptCacheRetention, "record legacy cache-retention intent (in_memory or 24h); never forwarded upstream")
 	fs.StringVar(&cfg.upstreamURL, "upstream-responses-url", cfg.upstreamURL, "ChatGPT Codex Responses endpoint")
 	fs.StringVar(&cfg.modelsURL, "models-url", cfg.modelsURL, "ChatGPT Codex models endpoint proxied by /v1/models")
 	fs.StringVar(&cfg.usageURL, "usage-url", cfg.usageURL, "ChatGPT Codex usage endpoint")
@@ -344,7 +344,7 @@ Common flags:
   --api-key                Optional client-facing bearer key
   --api-key-file           Optional file containing client-facing bearer key
   --prompt-cache-key       Inject prompt_cache_key when clients omit it
-  --prompt-cache-retention Inject prompt_cache_retention when clients omit it
+  --prompt-cache-retention Record legacy retention intent; never forward it upstream
   --request-log-limit      In-memory dashboard request history size
   --request-log-file       JSONL file for persistent request metadata; empty disables
 `)

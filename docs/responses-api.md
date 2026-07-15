@@ -357,9 +357,9 @@ contents.
 - Use `/v1/responses`, not `/v1/chat/completions`.
 - `prompt_cache_key` is preserved or injected so repeated long prompts can hit
   model-side prompt caching.
-- `prompt_cache_retention`, max-token aliases, `stream_options`, `user`, and
-  `service_tier` are stripped before forwarding because the Codex backend
-  rejects them.
+- `prompt_cache_retention`, `prompt_cache_options`, max-token aliases,
+  `stream_options`, and `user` are stripped before forwarding because the Codex
+  backend rejects them.
 - The broker never returns or exposes the Codex refresh token.
 
 ## Prompt Caching For Agents
@@ -383,9 +383,11 @@ session. If you omit it, the broker injects its configured default key, currentl
 `factory-droid`, but agents should send their own stable key so dashboard rows
 and cache affinity are easier to reason about.
 
-Do not send `prompt_cache_retention`. Some clients send
-`prompt_cache_retention: "24h"`, but the Codex backend rejects that field, so
-the broker strips it before forwarding.
+Do not send `prompt_cache_retention` or `prompt_cache_options`. Those controls
+belong to the public OpenAI Responses API; the ChatGPT Codex OAuth endpoint
+currently rejects both. The broker strips both controls before forwarding and
+cannot force a 24-hour cache lifetime. A stable
+`prompt_cache_key` still improves ordinary prefix-cache affinity.
 
 How to verify prompt caching:
 

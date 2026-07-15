@@ -104,6 +104,18 @@ The available transport modes are:
 Cached reuse is scoped to one running Pi session. Separate `pi -p` processes
 open separate connections and cannot demonstrate the second-turn delta.
 
+`websocket-cached` is conversation-state reuse, not a 24-hour prompt-cache
+setting. Pi sends a stable `prompt_cache_key`; after the first turn it can also
+send only new input with `previous_response_id` on the reused socket. Neither
+mechanism controls how long the upstream model cache retains a prefix.
+
+Keep `compat.supportsLongCacheRetention` unset or `false` for this provider.
+The public Responses API supports cache-retention request fields, but the
+ChatGPT Codex OAuth endpoint behind this broker rejects both
+`prompt_cache_retention` and `prompt_cache_options`. Setting the compatibility
+flag to `true` only makes Pi send an unsupported field; the broker must strip it
+to prevent an upstream `400` response.
+
 Current Pi versions zstd-compress Codex SSE request bodies. Broker versions
 with Pi SSE support decode `Content-Encoding: zstd` before applying request
 normalization.

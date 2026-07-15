@@ -14,10 +14,11 @@ provider: openai
 The proxy implements `/v1/responses`, which is the path Factory uses for the
 OpenAI custom-provider flow.
 
-Factory Droid `0.122` sends a few OpenAI SDK fields that the Codex backend
-does not accept directly, including `prompt_cache_retention`. The proxy strips
-those fields while preserving `prompt_cache_key`, so BYOK requests keep working
-and still get model-side prompt-cache affinity.
+Factory Droid and newer OpenAI SDKs can send fields that the ChatGPT Codex
+backend does not accept directly, including `prompt_cache_retention` and
+`prompt_cache_options`. The proxy strips those fields while preserving
+`prompt_cache_key`, so BYOK requests keep working and still get ordinary
+model-side prompt-cache affinity. This does not force a 24-hour cache lifetime.
 
 ## Recommended Models
 

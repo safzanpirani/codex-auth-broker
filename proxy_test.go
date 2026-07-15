@@ -71,6 +71,7 @@ func TestNormalizeResponsesBodyFactoryDefaults(t *testing.T) {
 		"user":                   "factory-user",
 		"service_tier":           "auto",
 		"prompt_cache_retention": "24h",
+		"prompt_cache_options":   map[string]any{"ttl": "30m"},
 	}
 	req := httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
 	info := normalizeResponsesBody(body, config{
@@ -90,6 +91,9 @@ func TestNormalizeResponsesBodyFactoryDefaults(t *testing.T) {
 	}
 	if _, ok := body["prompt_cache_retention"]; ok {
 		t.Fatal("prompt_cache_retention should be stripped")
+	}
+	if _, ok := body["prompt_cache_options"]; ok {
+		t.Fatal("prompt_cache_options should be stripped")
 	}
 	if _, ok := body["max_output_tokens"]; ok {
 		t.Fatal("max_output_tokens should be stripped")
