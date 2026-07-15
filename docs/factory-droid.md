@@ -18,7 +18,9 @@ Factory Droid and newer OpenAI SDKs can send fields that the ChatGPT Codex
 backend does not accept directly, including `prompt_cache_retention` and
 `prompt_cache_options`. The proxy strips those fields while preserving
 `prompt_cache_key`, so BYOK requests keep working and still get ordinary
-model-side prompt-cache affinity. This does not force a 24-hour cache lifetime.
+model-side prompt-cache affinity. The ChatGPT Codex backend applies retention
+server-side: GPT-5.5 and GPT-5.4 are documented as extended-retention models,
+while GPT-5.6 uses a newer minimum-TTL cache policy.
 
 ## Recommended Models
 

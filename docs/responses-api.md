@@ -386,8 +386,15 @@ and cache affinity are easier to reason about.
 Do not send `prompt_cache_retention` or `prompt_cache_options`. Those controls
 belong to the public OpenAI Responses API; the ChatGPT Codex OAuth endpoint
 currently rejects both. The broker strips both controls before forwarding and
-cannot force a 24-hour cache lifetime. A stable
-`prompt_cache_key` still improves ordinary prefix-cache affinity.
+preserves `prompt_cache_key` so the backend can apply its server-managed cache
+policy. OpenAI documents GPT-5.5 and GPT-5.4 as extended-retention models with
+entries retained for up to 24 hours. GPT-5.6 uses a newer policy with a
+30-minute minimum lifetime and possible longer retention.
+
+The response does not report the chosen retention policy. It reports only
+actual cache reads through `usage.input_tokens_details.cached_tokens`, so a
+zero on the first eligible request is expected and does not prove that cache
+retention is disabled.
 
 How to verify prompt caching:
 

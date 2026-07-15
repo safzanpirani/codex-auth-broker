@@ -158,11 +158,16 @@ prompt_cache_key = factory-droid
 ```
 
 The public OpenAI Responses API exposes cache-retention controls. The ChatGPT
-Codex OAuth endpoint used by this broker is a different backend and currently
-rejects both the legacy `prompt_cache_retention` field and the newer
+Codex OAuth endpoint used by this broker applies its cache policy server-side
+and rejects both the legacy `prompt_cache_retention` field and the newer
 `prompt_cache_options` object. The broker therefore strips those controls and
-relies on `prompt_cache_key` for ordinary cache affinity. It cannot force a
-24-hour cache lifetime for ChatGPT-plan traffic.
+preserves `prompt_cache_key`.
+
+This does not disable extended caching. OpenAI documents GPT-5.5 and GPT-5.4 as
+supporting extended prompt retention for up to 24 hours; GPT-5.6 instead uses a
+30-minute minimum lifetime and may retain entries longer. The exact retention
+policy of ChatGPT-plan Codex traffic is not exposed in the response, so verify
+actual reuse with `usage.input_tokens_details.cached_tokens`.
 
 Cache hits are visible in Responses usage as:
 

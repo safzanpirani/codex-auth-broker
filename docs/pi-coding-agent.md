@@ -104,17 +104,23 @@ The available transport modes are:
 Cached reuse is scoped to one running Pi session. Separate `pi -p` processes
 open separate connections and cannot demonstrate the second-turn delta.
 
-`websocket-cached` is conversation-state reuse, not a 24-hour prompt-cache
+`websocket-cached` is conversation-state reuse, not itself a prompt-cache TTL
 setting. Pi sends a stable `prompt_cache_key`; after the first turn it can also
-send only new input with `previous_response_id` on the reused socket. Neither
-mechanism controls how long the upstream model cache retains a prefix.
+send only new input with `previous_response_id` on the reused socket. The
+ChatGPT Codex backend applies prompt-cache retention server-side.
 
-Keep `compat.supportsLongCacheRetention` unset or `false` for this provider.
-The public Responses API supports cache-retention request fields, but the
-ChatGPT Codex OAuth endpoint behind this broker rejects both
-`prompt_cache_retention` and `prompt_cache_options`. Setting the compatibility
-flag to `true` only makes Pi send an unsupported field; the broker must strip it
-to prevent an upstream `400` response.
+OpenAI documents GPT-5.5 and GPT-5.4 as supporting extended prompt retention
+for up to 24 hours. GPT-5.6 uses the newer cache system: its documented minimum
+TTL is 30 minutes, and entries may remain eligible longer. The ChatGPT Codex
+endpoint rejects both public request controls, so the broker strips them while
+preserving the cache key. `compat.supportsLongCacheRetention` can remain unset
+or `false`; Pi's `openai-codex-responses` adapter does not need it to receive
+server-managed caching.
+
+Pi derives its cache key from the session id. Reuse or resume the same Pi
+session to keep that cache namespace. A fresh session gets a new key, so its
+first turn normally reports zero cached tokens even when its visible prompt is
+similar.
 
 Current Pi versions zstd-compress Codex SSE request bodies. Broker versions
 with Pi SSE support decode `Content-Encoding: zstd` before applying request
