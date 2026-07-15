@@ -104,6 +104,10 @@ The available transport modes are:
 Cached reuse is scoped to one running Pi session. Separate `pi -p` processes
 open separate connections and cannot demonstrate the second-turn delta.
 
+Current Pi versions zstd-compress Codex SSE request bodies. Broker versions
+with Pi SSE support decode `Content-Encoding: zstd` before applying request
+normalization.
+
 Restart existing Pi processes after changing the provider or environment. A
 new Pi process reads `models.json` and `settings.json` immediately.
 

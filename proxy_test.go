@@ -1,12 +1,40 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"github.com/klauspost/compress/zstd"
 )
+
+func TestDecodeRequestBodyZstd(t *testing.T) {
+	encoded, err := json.Marshal(map[string]any{
+		"model":  "gpt-5.6-sol",
+		"input":  "hello",
+		"stream": true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	encoder, err := zstd.NewWriter(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	compressed := encoder.EncodeAll(encoded, nil)
+	encoder.Close()
+
+	body, err := decodeRequestBody(bytes.NewReader(compressed), "zstd")
+	if err != nil {
+		t.Fatalf("decode Pi zstd request: %v", err)
+	}
+	if body["model"] != "gpt-5.6-sol" || body["input"] != "hello" {
+		t.Fatalf("decoded body = %#v", body)
+	}
+}
 
 func TestNormalizeFactoryModel(t *testing.T) {
 	tests := []struct {

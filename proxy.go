@@ -15,6 +15,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/klauspost/compress/zstd"
 )
 
 const maxRequestBodyBytes = 128 * 1024 * 1024
@@ -190,7 +192,7 @@ func (p *responsesProxy) handleResponses(w http.ResponseWriter, r *http.Request)
 		writeProxyError(w, http.StatusUnauthorized, "unauthorized")
 		return
 	}
-	body, err := decodeRequestBody(r.Body)
+	body, err := decodeRequestBody(r.Body, r.Header.Get("Content-Encoding"))
 	if err != nil {
 		logEntry.markError(http.StatusBadRequest, err.Error())
 		writeProxyError(w, http.StatusBadRequest, err.Error())
@@ -381,8 +383,24 @@ func (p *responsesProxy) authorizedClient(r *http.Request) bool {
 	return strings.TrimSpace(strings.TrimPrefix(header, prefix)) == want
 }
 
-func decodeRequestBody(r io.Reader) (map[string]any, error) {
-	decoder := json.NewDecoder(io.LimitReader(r, maxRequestBodyBytes))
+func decodeRequestBody(r io.Reader, contentEncoding string) (map[string]any, error) {
+	var reader io.Reader = io.LimitReader(r, maxRequestBodyBytes+1)
+	if encoding := strings.ToLower(strings.TrimSpace(contentEncoding)); encoding != "" && encoding != "identity" {
+		if encoding != "zstd" {
+			return nil, fmt.Errorf("unsupported content encoding %q", encoding)
+		}
+		decoder, err := zstd.NewReader(reader,
+			zstd.WithDecoderMaxWindow(maxRequestBodyBytes),
+			zstd.WithDecoderMaxMemory(maxRequestBodyBytes*2),
+		)
+		if err != nil {
+			return nil, fmt.Errorf("invalid zstd request body: %w", err)
+		}
+		defer decoder.Close()
+		reader = decoder
+	}
+
+	decoder := json.NewDecoder(io.LimitReader(reader, maxRequestBodyBytes+1))
 	decoder.UseNumber()
 	var body map[string]any
 	if err := decoder.Decode(&body); err != nil {

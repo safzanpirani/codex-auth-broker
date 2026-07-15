@@ -149,6 +149,8 @@ Compatibility normalizations:
   backend rejects them.
 - Non-streaming requests are implemented by forcing upstream streaming and
   aggregating the final SSE response.
+- Request bodies with `Content-Encoding: zstd` are decompressed before
+  normalization. Pi's Codex adapter uses this encoding for SSE requests.
 
 ## Responses WebSocket
 
