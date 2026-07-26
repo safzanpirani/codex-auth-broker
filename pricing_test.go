@@ -40,6 +40,24 @@ func TestEstimateCostUSDPrefixAndUnknown(t *testing.T) {
 	}
 }
 
+func TestEstimateCostUSDPricesGPT56CacheWrites(t *testing.T) {
+	usage := tokenUsage{
+		InputTokens:      int64Ptr(100_000),
+		OutputTokens:     int64Ptr(10_000),
+		CachedTokens:     int64Ptr(40_000),
+		CacheWriteTokens: int64Ptr(20_000),
+	}
+	cost := estimateCostUSD(defaultModelPricing, "gpt-5.6-sol", usage)
+	if cost == nil {
+		t.Fatal("expected cost for gpt-5.6-sol")
+	}
+	// 40k normal input + 40k cache reads + 20k cache writes + 10k output.
+	want := (40_000*5.00 + 40_000*0.50 + 20_000*6.25 + 10_000*30.00) / 1e6
+	if math.Abs(*cost-want) > 1e-9 {
+		t.Fatalf("cost = %v, want %v", *cost, want)
+	}
+}
+
 func TestLookupModelPricingPrefersLongestPrefix(t *testing.T) {
 	pricing, ok := lookupModelPricing(defaultModelPricing, "gpt-5.4-mini")
 	if !ok || pricing.InputPerM != 0.75 {
@@ -141,6 +159,9 @@ func TestLoadModelPricingOverride(t *testing.T) {
 	}
 	if _, ok := table["my-model"]; !ok {
 		t.Fatal("expected override model in table")
+	}
+	if table["my-model"].CacheWritePerM != table["my-model"].InputPerM {
+		t.Fatalf("omitted cache_write should default to input price: %+v", table["my-model"])
 	}
 	if _, ok := table["gpt-5.5"]; !ok {
 		t.Fatal("defaults should be preserved")

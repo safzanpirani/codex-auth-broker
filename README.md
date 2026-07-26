@@ -1,12 +1,12 @@
 # codex-auth-broker
 
-Codex app-server powered auth bridge for Factory Droid and any tool that can
-talk to an OpenAI-compatible Responses API.
+Codex app-server powered auth bridge for Pi, Factory Droid, and tools that
+talk to the OpenAI Responses or Chat Completions APIs.
 
 The main use case is simple: log into Codex on one trusted machine, run this
-broker there, and point Factory Droid at `http://127.0.0.1:8317/v1` or a
-private Tailscale address. Factory gets `/v1/responses`; your real Codex OAuth
-refresh token stays on the machine that owns the login.
+broker there, and point Pi or Factory Droid at `http://127.0.0.1:8317/v1` or a
+private Tailscale address. Your client gets `/v1/responses`; your real Codex
+OAuth refresh token stays on the machine that owns the login.
 
 This is for personal/local infrastructure. Do not expose it on the public
 internet.
@@ -25,15 +25,18 @@ internet.
   - `GET /v1/responses` (Responses WebSocket upgrade)
   - `POST /v1/responses`
   - `GET` / `POST /v1/codex/responses` (Pi Codex transport alias)
+  - `POST /v1/chat/completions`
 - Supports Responses-over-WebSocket, HTTP SSE streaming, and non-streaming
   Responses clients.
+- Translates Chat Completions messages, function tools, structured output,
+  final responses, and streaming chunks over the same Responses backend.
 - Normalizes Factory model names like `gpt-5.5(medium)`.
 - Preserves or injects `prompt_cache_key` for model-side prompt caching.
 - Strips OpenAI SDK compatibility fields that the Codex backend rejects.
 - Shows a local redacted dashboard with request history and live Codex usage.
 - Optionally pools several Codex accounts and fails over when one hits a rolling
   usage limit (the ~5-hour or weekly window). See [Multi-Account Failover](#multi-account-failover).
-- Never returns a refresh token to Factory Droid or remote clients.
+- Never returns a refresh token to Pi, Factory Droid, or remote clients.
 
 ## Why This Exists
 
@@ -132,6 +135,23 @@ For copy-paste examples covering model ids, reasoning levels, streaming, image
 input, and custom provider configuration, see
 [`docs/responses-api.md`](docs/responses-api.md).
 
+Chat Completions call:
+
+```bash
+curl -sS http://127.0.0.1:8317/v1/chat/completions \
+  -H 'Content-Type: application/json' \
+  -H 'Authorization: Bearer dummy' \
+  -d '{
+    "model": "gpt-5.5(low)",
+    "messages": [{"role": "user", "content": "Reply exactly: CHAT_OK"}],
+    "stream": false,
+    "prompt_cache_key": "my-project"
+  }'
+```
+
+See [`docs/chat-completions.md`](docs/chat-completions.md) for streaming,
+function calling, cache behavior, and current compatibility boundaries.
+
 Responses WebSocket clients can use the same base URL and bearer key. The
 broker implements the `responses_websockets=2026-02-06` protocol, forwards
 Codex turn-state/model handshake headers, and applies the same model and request
@@ -167,7 +187,8 @@ This does not disable extended caching. OpenAI documents GPT-5.5 and GPT-5.4 as
 supporting extended prompt retention for up to 24 hours; GPT-5.6 instead uses a
 30-minute minimum lifetime and may retain entries longer. The exact retention
 policy of ChatGPT-plan Codex traffic is not exposed in the response, so verify
-actual reuse with `usage.input_tokens_details.cached_tokens`.
+actual reuse with `usage.input_tokens_details.cached_tokens` on Responses or
+`usage.prompt_tokens_details.cached_tokens` on Chat Completions.
 
 Cache hits are visible in Responses usage as:
 
@@ -181,6 +202,11 @@ Cache hits are visible in Responses usage as:
 }
 ```
 
+Chat Completions returns the equivalent signal under
+`usage.prompt_tokens_details`. When upstream reports GPT-5.6 cache writes, the
+broker also preserves `cache_write_tokens` in that object and in redacted
+request metadata.
+
 OpenAI prompt-caching docs:
 
 ```text
@@ -190,14 +216,14 @@ https://platform.openai.com/docs/guides/prompt-caching
 ## Dashboard
 
 The dashboard is served by the same Go process at `/dashboard`. It is intended
-for local debugging while Factory Droid or another Responses client is pointed
-at the broker.
+for local debugging while Pi, Factory Droid, or another Responses client is
+pointed at the broker.
 
 It shows:
 
 - Live Codex usage from `https://chatgpt.com/backend-api/wham/usage`.
 - Primary and secondary usage windows, including reset countdowns.
-- Redacted request history for `/v1/models`, `/v1/responses`, and unsupported
+- Redacted request history for `/v1/models`, `/v1/responses`, and
   `/v1/chat/completions` calls.
 - Status, model normalization, reasoning effort, streaming mode, duration,
   cached tokens, and total tokens. Streaming calls are scanned as they pass
@@ -206,7 +232,9 @@ It shows:
   API-equivalent estimates from the built-in pricing table (cached input is
   priced at the discounted rate); ChatGPT-plan traffic is not actually billed
   per token. Override prices with `CODEX_AUTH_BROKER_PRICING`, for example
-  `{"gpt-5.5":{"input":5,"cached_input":0.5,"output":30}}` (USD per 1M tokens).
+  `{"gpt-5.5":{"input":5,"cached_input":0.5,"cache_write":5,"output":30}}`
+  (USD per 1M tokens). GPT-5.6 defaults price reported cache writes at 1.25x
+  uncached input, matching the public API-equivalent rate.
 - Filtering, pause/resume, manual refresh, and clear-history controls.
 
 The in-memory request log is bounded by `--request-log-limit`. Request
@@ -398,15 +426,18 @@ Remote clients must not receive the Codex OAuth refresh token.
 ```
 
 The broker reads and refreshes `~/.codex/auth.json` locally. Clients receive
-only model responses from `/v1/responses`; they do not receive access tokens,
-refresh tokens, or the auth file.
+only model responses from `/v1/responses` or `/v1/chat/completions`; they do
+not receive access tokens, refresh tokens, or the auth file.
 
 If you bind to anything other than localhost, set `--api-key` or
 `--api-key-file` and use a private network.
 
 ## Limitations
 
-- `/v1/chat/completions` intentionally returns HTTP 501 for now.
+- Chat Completions currently supports one choice (`n: 1`), text/image/file
+  input, function tools, and text output. Audio and custom tools are rejected.
+- Chat max-token aliases are accepted for SDK compatibility but stripped
+  because the Codex backend rejects them.
 - Responses WebSocket connections inherit the upstream 60-minute connection
   limit. Clients must reconnect after `websocket_connection_limit_reached`.
 - This is not a full OpenAI API clone.

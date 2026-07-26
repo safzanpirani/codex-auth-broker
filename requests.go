@@ -30,6 +30,7 @@ type requestLogEntry struct {
 	NormalizedModel         string   `json:"normalized_model,omitempty"`
 	ReasoningEffort         string   `json:"reasoning_effort,omitempty"`
 	ServiceTier             string   `json:"service_tier,omitempty"`
+	AppliedServiceTier      string   `json:"applied_service_tier,omitempty"`
 	Stream                  bool     `json:"stream"`
 	Status                  int      `json:"status"`
 	UpstreamStatus          int      `json:"upstream_status,omitempty"`
@@ -43,6 +44,7 @@ type requestLogEntry struct {
 	InputTokens             *int64   `json:"input_tokens,omitempty"`
 	OutputTokens            *int64   `json:"output_tokens,omitempty"`
 	CachedTokens            *int64   `json:"cached_tokens,omitempty"`
+	CacheWriteTokens        *int64   `json:"cache_write_tokens,omitempty"`
 	TotalTokens             *int64   `json:"total_tokens,omitempty"`
 	CostUSD                 *float64 `json:"cost_usd,omitempty"`
 }
@@ -105,9 +107,10 @@ func (s *requestLogStore) restore(entries []requestLogEntry, maxID int64) {
 		}
 		model := valueOr(entries[i].NormalizedModel, entries[i].Model)
 		entries[i].CostUSD = estimateCostUSD(s.pricing, model, tokenUsage{
-			InputTokens:  entries[i].InputTokens,
-			OutputTokens: entries[i].OutputTokens,
-			CachedTokens: entries[i].CachedTokens,
+			InputTokens:      entries[i].InputTokens,
+			OutputTokens:     entries[i].OutputTokens,
+			CachedTokens:     entries[i].CachedTokens,
+			CacheWriteTokens: entries[i].CacheWriteTokens,
 		})
 	}
 	s.entries = append(s.entries, entries...)
@@ -185,10 +188,11 @@ func (l *pendingRequestLog) finish() {
 	l.Entry.Error = truncateLogField(redactTokenLikeText(l.Entry.Error), 300)
 	model := valueOr(l.Entry.NormalizedModel, l.Entry.Model)
 	l.Entry.CostUSD = estimateCostUSD(l.store.pricing, model, tokenUsage{
-		InputTokens:  l.Entry.InputTokens,
-		OutputTokens: l.Entry.OutputTokens,
-		CachedTokens: l.Entry.CachedTokens,
-		TotalTokens:  l.Entry.TotalTokens,
+		InputTokens:      l.Entry.InputTokens,
+		OutputTokens:     l.Entry.OutputTokens,
+		CachedTokens:     l.Entry.CachedTokens,
+		CacheWriteTokens: l.Entry.CacheWriteTokens,
+		TotalTokens:      l.Entry.TotalTokens,
 	})
 	l.store.add(l.Entry)
 }
@@ -198,6 +202,27 @@ func (l *pendingRequestLog) markError(status int, message string) {
 		return
 	}
 	l.Entry.Status = status
+	l.Entry.Error = message
+}
+
+func (l *pendingRequestLog) markStatus(status int) {
+	if l == nil {
+		return
+	}
+	l.Entry.Status = status
+}
+
+func (l *pendingRequestLog) markUpstreamStatus(status int) {
+	if l == nil {
+		return
+	}
+	l.Entry.UpstreamStatus = status
+}
+
+func (l *pendingRequestLog) markStreamError(message string) {
+	if l == nil {
+		return
+	}
 	l.Entry.Error = message
 }
 
@@ -225,6 +250,13 @@ func (l *pendingRequestLog) markRequest(body map[string]any, info requestInfo, r
 	}
 }
 
+func (l *pendingRequestLog) markAppliedServiceTier(tier string) {
+	if l == nil {
+		return
+	}
+	l.Entry.AppliedServiceTier = tier
+}
+
 func (l *pendingRequestLog) markUsage(usage tokenUsage) {
 	if l == nil {
 		return
@@ -232,6 +264,7 @@ func (l *pendingRequestLog) markUsage(usage tokenUsage) {
 	l.Entry.InputTokens = usage.InputTokens
 	l.Entry.OutputTokens = usage.OutputTokens
 	l.Entry.CachedTokens = usage.CachedTokens
+	l.Entry.CacheWriteTokens = usage.CacheWriteTokens
 	l.Entry.TotalTokens = usage.TotalTokens
 }
 

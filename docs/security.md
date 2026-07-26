@@ -10,8 +10,9 @@ The broker runs on the machine where Codex is already logged in. It reads and
 refreshes the local Codex auth file, then forwards model requests to the Codex
 Responses backend with short-lived access auth.
 
-Clients only talk to the OpenAI-compatible `/v1/responses` surface and local
-dashboard APIs. They do not receive the access token or refresh token.
+Clients only talk to the OpenAI-compatible `/v1/responses` or
+`/v1/chat/completions` surface and local dashboard APIs. They do not receive
+the access token or refresh token.
 
 For Responses WebSockets, the broker terminates the client connection and
 opens a separate upstream connection. Client authorization is checked before
@@ -27,7 +28,7 @@ headers.
 - Keep `~/.codex/auth.json` mode `0600`.
 - Treat the client API key as sensitive.
 - Treat `/dashboard` as a local operational console. The dashboard API uses the
-  same bearer key as `/v1/responses` when client auth is configured.
+  same bearer key as the model endpoints when client auth is configured.
 
 ## Do Not
 

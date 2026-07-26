@@ -271,6 +271,9 @@ const dashboardHTML = `<!doctype html>
     .badge.effort-xhigh{color:var(--red);border-color:var(--s1);}
     .badge.effort-max{color:var(--red);border-color:var(--red);}
     .badge.tier-priority{color:var(--yellow);border-color:var(--s1);}
+    .badge.tier-ultrafast{color:var(--red);border-color:var(--red);}
+    .badge.tier-downgraded{color:var(--red);border-color:var(--red);}
+    .badge.tier-honored{color:var(--green);border-color:var(--green);}
     .badge.cache{color:var(--green);border-color:var(--s1);}
 
     .detail{color:var(--ov0);font-family:var(--font-label);font-size:.62rem;}
@@ -730,7 +733,11 @@ const dashboardHTML = `<!doctype html>
           ? '<span class="badge effort-' + escapeHTML(req.reasoning_effort) + '">' + escapeHTML(req.reasoning_effort) + '</span>'
           : '<span class="muted">—</span>';
         const tier = req.service_tier
-          ? '<div class="detail"><span class="badge tier-' + escapeHTML(req.service_tier) + '">' + escapeHTML(req.service_tier) + '</span></div>'
+          ? '<div class="detail"><span class="badge tier-' + escapeHTML(req.service_tier) + '">' + escapeHTML(req.service_tier) + '</span>'
+            + (req.applied_service_tier && req.applied_service_tier !== req.service_tier
+              ? ' <span class="badge tier-downgraded" title="upstream applied ' + escapeHTML(req.applied_service_tier) + ' instead of ' + escapeHTML(req.service_tier) + '">→' + escapeHTML(req.applied_service_tier) + '</span>'
+              : (req.applied_service_tier ? ' <span class="badge tier-honored" title="upstream honored ' + escapeHTML(req.applied_service_tier) + '">✓</span>' : ''))
+            + '</div>'
           : '';
         const stream = req.stream
           ? '<span class="badge stream">stream</span>'
@@ -773,9 +780,11 @@ const dashboardHTML = `<!doctype html>
         const lines = [];
         if (req.input_tokens != null || req.output_tokens != null) {
           const cached = req.cached_tokens || 0;
+          const cacheWrite = req.cache_write_tokens || 0;
           const input = req.input_tokens || 0;
           let tok = fmtTokens(input) + " in";
           if (cached) tok += " (" + fmtTokens(cached) + " cached, " + fmtTokens(Math.max(0, input - cached)) + " fresh)";
+          if (cacheWrite) tok += " · " + fmtTokens(cacheWrite) + " cache write";
           tok += " · " + fmtTokens(req.output_tokens || 0) + " out";
           if (req.total_tokens != null) tok += " · " + fmtTokens(req.total_tokens) + " total";
           lines.push("<div class='line'><b>tokens</b>" + escapeHTML(tok) + "</div>");
@@ -785,8 +794,8 @@ const dashboardHTML = `<!doctype html>
         }
         const meta = {};
         ["id", "started_at", "method", "path", "status", "upstream_status", "model", "normalized_model",
-         "reasoning_effort", "service_tier", "stream", "duration_ms", "input_count", "tool_count",
-         "prompt_cache_key_set", "prompt_cache_key", "prompt_cache_retention_set", "prompt_cache_retention", "request_id", "client", "error"
+         "reasoning_effort", "service_tier", "applied_service_tier", "stream", "duration_ms", "input_count", "tool_count",
+         "prompt_cache_key_set", "prompt_cache_key", "prompt_cache_retention_set", "prompt_cache_retention", "cache_write_tokens", "request_id", "client", "error"
         ].forEach((key) => { if (req[key] !== undefined && req[key] !== "" && req[key] !== null) meta[key] = req[key]; });
         lines.push("<pre>" + escapeHTML(JSON.stringify(meta, null, 2)) + "</pre>");
         return '<tr class="detail-row"><td colspan="10"><div class="detail-box">' + lines.join("") + '</div></td></tr>';
@@ -794,6 +803,7 @@ const dashboardHTML = `<!doctype html>
 
       function renderCache(req) {
         const cached = req.cached_tokens;
+        const cacheWrite = req.cache_write_tokens;
         const input = req.input_tokens;
         const keyVal = req.prompt_cache_key ? String(req.prompt_cache_key) : '';
         const keyShort = keyVal ? (keyVal.length > 8 ? '…' + keyVal.slice(-6) : keyVal) : '';
@@ -803,7 +813,10 @@ const dashboardHTML = `<!doctype html>
         const ttlFlag = req.prompt_cache_retention
           ? '<span class="badge cache" title="prompt_cache_retention requested by client — stripped before forwarding to Codex">ttl ' + escapeHTML(req.prompt_cache_retention) + '</span>'
           : (req.prompt_cache_retention_set ? '<span class="badge cache" title="prompt_cache_retention requested by client — stripped before forwarding to Codex">ttl on</span>' : '');
-        const flag = keyFlag + ttlFlag;
+        const writeFlag = cacheWrite
+          ? '<span class="badge cache" title="prompt tokens written to the upstream model cache">' + fmtTokens(cacheWrite) + ' written</span>'
+          : '';
+        const flag = keyFlag + ttlFlag + writeFlag;
         if (cached == null && !req.prompt_cache_key_set && !req.prompt_cache_retention_set) return '<span class="muted">—</span>';
         if (cached == null || cached === 0) {
           return '<div class="cache-cell">' + flag + '<span class="cache-pct cold">0% cached</span></div>';

@@ -138,6 +138,18 @@ func TestNormalizeResponsesBodyServiceTier(t *testing.T) {
 
 	body = map[string]any{
 		"model":        "gpt-5.5",
+		"service_tier": "ultrafast",
+	}
+	info = normalizeResponsesBody(body, config{}, req)
+	if info.ServiceTier != "ultrafast" {
+		t.Fatalf("ServiceTier = %#v, want ultrafast", info.ServiceTier)
+	}
+	if body["service_tier"] != "ultrafast" {
+		t.Fatalf("service_tier = %#v, want ultrafast", body["service_tier"])
+	}
+
+	body = map[string]any{
+		"model":        "gpt-5.5",
 		"service_tier": "expensive",
 	}
 	info = normalizeResponsesBody(body, config{}, req)
@@ -263,7 +275,11 @@ func TestExtractTokenUsage(t *testing.T) {
 			"output_tokens": json.Number("25"),
 			"total_tokens":  json.Number("125"),
 			"input_tokens_details": map[string]any{
-				"cached_tokens": json.Number("75"),
+				"cached_tokens":      json.Number("75"),
+				"cache_write_tokens": json.Number("10"),
+			},
+			"output_tokens_details": map[string]any{
+				"reasoning_tokens": json.Number("5"),
 			},
 		},
 	}
@@ -276,6 +292,12 @@ func TestExtractTokenUsage(t *testing.T) {
 	}
 	if usage.CachedTokens == nil || *usage.CachedTokens != 75 {
 		t.Fatalf("cached_tokens = %#v, want 75", usage.CachedTokens)
+	}
+	if usage.CacheWriteTokens == nil || *usage.CacheWriteTokens != 10 {
+		t.Fatalf("cache_write_tokens = %#v, want 10", usage.CacheWriteTokens)
+	}
+	if usage.ReasoningTokens == nil || *usage.ReasoningTokens != 5 {
+		t.Fatalf("reasoning_tokens = %#v, want 5", usage.ReasoningTokens)
 	}
 	if usage.TotalTokens == nil || *usage.TotalTokens != 125 {
 		t.Fatalf("total_tokens = %#v, want 125", usage.TotalTokens)
@@ -299,6 +321,43 @@ func TestSSEUsageTrackerCapturesStreamingFinalUsage(t *testing.T) {
 	}
 	if usage.TotalTokens == nil || *usage.TotalTokens != 57 {
 		t.Fatalf("total_tokens = %#v, want 57", usage.TotalTokens)
+	}
+}
+
+func TestExtractServiceTier(t *testing.T) {
+	if got := extractServiceTier(map[string]any{"service_tier": "  Ultrafast "}); got != "ultrafast" {
+		t.Fatalf("extractServiceTier = %q, want ultrafast", got)
+	}
+	if got := extractServiceTier(map[string]any{"service_tier": "default"}); got != "default" {
+		t.Fatalf("extractServiceTier = %q, want default", got)
+	}
+	if got := extractServiceTier(map[string]any{}); got != "" {
+		t.Fatalf("extractServiceTier = %q, want empty", got)
+	}
+	if got := extractServiceTier(nil); got != "" {
+		t.Fatalf("extractServiceTier(nil) = %q, want empty", got)
+	}
+}
+
+func TestSSEUsageTrackerCapturesAppliedServiceTier(t *testing.T) {
+	tracker := &sseUsageTracker{}
+	tracker.feed([]byte("event: response.completed\n"))
+	tracker.feed([]byte(`data: {"type":"response.completed","response":{"service_tier":"default","usage":{"input_tokens":1}}}` + "\n\n"))
+	tracker.finish()
+	if tracker.serviceTier != "default" {
+		t.Fatalf("tracker.serviceTier = %q, want default (upstream downgraded ultrafast)", tracker.serviceTier)
+	}
+}
+
+func TestAggregateResponsesSSEKeepsServiceTier(t *testing.T) {
+	stream := "event: response.completed\n" +
+		`data: {"type":"response.completed","response":{"service_tier":"ultrafast","output":[]}}` + "\n\n"
+	got, err := aggregateResponsesSSE(strings.NewReader(stream))
+	if err != nil {
+		t.Fatalf("aggregateResponsesSSE error: %v", err)
+	}
+	if tier := extractServiceTier(got); tier != "ultrafast" {
+		t.Fatalf("applied service_tier = %q, want ultrafast", tier)
 	}
 }
 

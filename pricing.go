@@ -9,27 +9,28 @@ import (
 
 // modelPricing holds USD prices per one million tokens.
 type modelPricing struct {
-	InputPerM  float64 `json:"input"`
-	CachedPerM float64 `json:"cached_input"`
-	OutputPerM float64 `json:"output"`
+	InputPerM      float64 `json:"input"`
+	CachedPerM     float64 `json:"cached_input"`
+	CacheWritePerM float64 `json:"cache_write"`
+	OutputPerM     float64 `json:"output"`
 }
 
 // defaultModelPricing mirrors OpenAI API list prices (USD per 1M tokens).
 // Costs are estimates of equivalent API spend; ChatGPT-plan requests are not
 // actually billed per token.
 var defaultModelPricing = map[string]modelPricing{
-	"gpt-5.6-sol":   {InputPerM: 5.00, CachedPerM: 0.50, OutputPerM: 30.00},
-	"gpt-5.6-terra": {InputPerM: 2.50, CachedPerM: 0.25, OutputPerM: 15.00},
-	"gpt-5.6-luna":  {InputPerM: 1.00, CachedPerM: 0.10, OutputPerM: 6.00},
-	"gpt-5.5":       {InputPerM: 5.00, CachedPerM: 0.50, OutputPerM: 30.00},
-	"gpt-5.4":       {InputPerM: 2.50, CachedPerM: 0.25, OutputPerM: 15.00},
-	"gpt-5.4-mini":  {InputPerM: 0.75, CachedPerM: 0.075, OutputPerM: 4.50},
-	"gpt-5.3-codex": {InputPerM: 1.75, CachedPerM: 0.175, OutputPerM: 14.00},
+	"gpt-5.6-sol":   {InputPerM: 5.00, CachedPerM: 0.50, CacheWritePerM: 6.25, OutputPerM: 30.00},
+	"gpt-5.6-terra": {InputPerM: 2.50, CachedPerM: 0.25, CacheWritePerM: 3.125, OutputPerM: 15.00},
+	"gpt-5.6-luna":  {InputPerM: 1.00, CachedPerM: 0.10, CacheWritePerM: 1.25, OutputPerM: 6.00},
+	"gpt-5.5":       {InputPerM: 5.00, CachedPerM: 0.50, CacheWritePerM: 5.00, OutputPerM: 30.00},
+	"gpt-5.4":       {InputPerM: 2.50, CachedPerM: 0.25, CacheWritePerM: 2.50, OutputPerM: 15.00},
+	"gpt-5.4-mini":  {InputPerM: 0.75, CachedPerM: 0.075, CacheWritePerM: 0.75, OutputPerM: 4.50},
+	"gpt-5.3-codex": {InputPerM: 1.75, CachedPerM: 0.175, CacheWritePerM: 1.75, OutputPerM: 14.00},
 }
 
 // loadModelPricing returns the default table merged with any overrides from
 // CODEX_AUTH_BROKER_PRICING, a JSON object like
-// {"gpt-5.5":{"input":5,"cached_input":0.5,"output":30}}.
+// {"gpt-5.5":{"input":5,"cached_input":0.5,"cache_write":5,"output":30}}.
 func loadModelPricing() (map[string]modelPricing, error) {
 	table := make(map[string]modelPricing, len(defaultModelPricing))
 	for model, pricing := range defaultModelPricing {
@@ -44,6 +45,9 @@ func loadModelPricing() (map[string]modelPricing, error) {
 		return nil, fmt.Errorf("invalid CODEX_AUTH_BROKER_PRICING: %w", err)
 	}
 	for model, pricing := range overrides {
+		if pricing.CacheWritePerM == 0 {
+			pricing.CacheWritePerM = pricing.InputPerM
+		}
 		table[strings.TrimSpace(model)] = pricing
 	}
 	return table, nil
@@ -78,7 +82,7 @@ func estimateCostUSD(table map[string]modelPricing, model string, usage tokenUsa
 	if !ok || (usage.InputTokens == nil && usage.OutputTokens == nil) {
 		return nil
 	}
-	var input, output, cached float64
+	var input, output, cached, cacheWrite float64
 	if usage.InputTokens != nil {
 		input = float64(*usage.InputTokens)
 	}
@@ -88,9 +92,18 @@ func estimateCostUSD(table map[string]modelPricing, model string, usage tokenUsa
 	if usage.CachedTokens != nil {
 		cached = float64(*usage.CachedTokens)
 	}
+	if usage.CacheWriteTokens != nil {
+		cacheWrite = float64(*usage.CacheWriteTokens)
+	}
 	if cached > input {
 		cached = input
 	}
-	cost := ((input-cached)*pricing.InputPerM + cached*pricing.CachedPerM + output*pricing.OutputPerM) / 1e6
+	if cacheWrite > input-cached {
+		cacheWrite = input - cached
+	}
+	cost := ((input-cached-cacheWrite)*pricing.InputPerM +
+		cached*pricing.CachedPerM +
+		cacheWrite*pricing.CacheWritePerM +
+		output*pricing.OutputPerM) / 1e6
 	return &cost
 }

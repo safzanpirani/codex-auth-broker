@@ -8,22 +8,24 @@ import (
 )
 
 type costModelTotals struct {
-	Model        string  `json:"model"`
-	Requests     int     `json:"requests"`
-	CostUSD      float64 `json:"cost_usd"`
-	InputTokens  int64   `json:"input_tokens"`
-	OutputTokens int64   `json:"output_tokens"`
-	CachedTokens int64   `json:"cached_tokens"`
+	Model            string  `json:"model"`
+	Requests         int     `json:"requests"`
+	CostUSD          float64 `json:"cost_usd"`
+	InputTokens      int64   `json:"input_tokens"`
+	OutputTokens     int64   `json:"output_tokens"`
+	CachedTokens     int64   `json:"cached_tokens"`
+	CacheWriteTokens int64   `json:"cache_write_tokens"`
 }
 
 type costWindowTotals struct {
-	Requests     int               `json:"requests"`
-	Priced       int               `json:"priced"`
-	CostUSD      float64           `json:"cost_usd"`
-	InputTokens  int64             `json:"input_tokens"`
-	OutputTokens int64             `json:"output_tokens"`
-	CachedTokens int64             `json:"cached_tokens"`
-	Models       []costModelTotals `json:"models,omitempty"`
+	Requests         int               `json:"requests"`
+	Priced           int               `json:"priced"`
+	CostUSD          float64           `json:"cost_usd"`
+	InputTokens      int64             `json:"input_tokens"`
+	OutputTokens     int64             `json:"output_tokens"`
+	CachedTokens     int64             `json:"cached_tokens"`
+	CacheWriteTokens int64             `json:"cache_write_tokens"`
+	Models           []costModelTotals `json:"models,omitempty"`
 }
 
 type costSummary struct {
@@ -93,6 +95,9 @@ func (s *requestLogStore) costSummary(now time.Time) (costSummary, error) {
 			if entry.CachedTokens != nil {
 				acc.totals.CachedTokens += *entry.CachedTokens
 			}
+			if entry.CacheWriteTokens != nil {
+				acc.totals.CacheWriteTokens += *entry.CacheWriteTokens
+			}
 			if entry.CostUSD == nil {
 				continue
 			}
@@ -114,6 +119,9 @@ func (s *requestLogStore) costSummary(now time.Time) (costSummary, error) {
 			}
 			if entry.CachedTokens != nil {
 				byModel.CachedTokens += *entry.CachedTokens
+			}
+			if entry.CacheWriteTokens != nil {
+				byModel.CacheWriteTokens += *entry.CacheWriteTokens
 			}
 		}
 	}

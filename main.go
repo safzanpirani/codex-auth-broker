@@ -324,13 +324,13 @@ func usage(w interface{ Write([]byte) (int, error) }) {
 	fmt.Fprint(w, `codex-auth-broker
 
 Codex app-server powered auth bridge for Factory Droid and any client that
-speaks the OpenAI Responses API.
+speaks the OpenAI Responses or Chat Completions API.
 
 Factory Droid first:
   codex-auth-broker serve --listen 127.0.0.1:8317
 
 Commands:
-  serve     Run the OpenAI-compatible /v1/responses proxy
+  serve     Run the OpenAI-compatible Responses and Chat Completions proxy
   doctor    Validate local Codex auth and print redacted status
   version   Print build metadata
 
