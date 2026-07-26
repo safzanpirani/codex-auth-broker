@@ -76,28 +76,36 @@ func TestTranslateChatCompletionsBody(t *testing.T) {
 	if !info.Stream || !info.IncludeUsage {
 		t.Fatalf("chat request info = %#v, want stream with usage", info)
 	}
-	if body["instructions"] != "Be precise." {
-		t.Fatalf("instructions = %#v", body["instructions"])
+	if _, exists := body["instructions"]; exists {
+		t.Fatalf("instructions = %#v, want instruction messages kept in input order", body["instructions"])
 	}
 	if body["prompt_cache_key"] != "conversation-123" {
 		t.Fatalf("prompt_cache_key = %#v", body["prompt_cache_key"])
 	}
 
 	input := body["input"].([]any)
-	if len(input) != 3 {
-		t.Fatalf("input length = %d, want 3", len(input))
+	if len(input) != 4 {
+		t.Fatalf("input length = %d, want 4", len(input))
 	}
-	user := input[0].(map[string]any)
+	developer := input[0].(map[string]any)
+	if developer["role"] != "developer" {
+		t.Fatalf("translated developer message = %#v", developer)
+	}
+	developerContent := developer["content"].([]any)
+	if developerContent[0].(map[string]any)["text"] != "Be precise." {
+		t.Fatalf("translated developer content = %#v", developerContent)
+	}
+	user := input[1].(map[string]any)
 	userContent := user["content"].([]any)
 	image := userContent[1].(map[string]any)
 	if image["type"] != "input_image" || image["detail"] != "low" {
 		t.Fatalf("translated image = %#v", image)
 	}
-	call := input[1].(map[string]any)
+	call := input[2].(map[string]any)
 	if call["type"] != "function_call" || call["call_id"] != "call_1" {
 		t.Fatalf("translated function call = %#v", call)
 	}
-	output := input[2].(map[string]any)
+	output := input[3].(map[string]any)
 	if output["type"] != "function_call_output" || output["call_id"] != "call_1" {
 		t.Fatalf("translated function output = %#v", output)
 	}
@@ -319,6 +327,92 @@ func TestTranslateChatCompletionsRejectsMultipleChoices(t *testing.T) {
 	})
 	if err == nil || chatErrorParam(err) != "n" {
 		t.Fatalf("error = %#v, want n validation error", err)
+	}
+}
+
+func TestHandleChatCompletionsPreservesInstructionOrder(t *testing.T) {
+	upstreamRequests := make(chan map[string]any, 1)
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Errorf("decode upstream request: %v", err)
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		upstreamRequests <- body
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte(strings.Join([]string{
+			"event: response.output_item.done",
+			`data: {"type":"response.output_item.done","output_index":0,"item":{"id":"msg_1","type":"message","role":"assistant","content":[{"type":"output_text","text":"ORDER_OK"}]}}`,
+			"",
+			"event: response.completed",
+			`data: {"type":"response.completed","response":{"id":"resp_order","created_at":1700000000,"model":"gpt-5.5","status":"completed","output":[]}}`,
+			"",
+		}, "\n")))
+	}))
+	defer upstream.Close()
+
+	authFile := writeWebSocketTestAuth(t, "acct_chat_order")
+	proxy := &responsesProxy{
+		cfg: config{
+			apiKey:              "client-key",
+			upstreamURL:         upstream.URL,
+			upstreamOriginator:  "codex_cli_rs",
+			modelsClientVersion: "2.0.0",
+			promptCacheKey:      "factory-droid",
+		},
+		pool:     newAccountPool([]string{authFile}, time.Minute, upstream.Client()),
+		requests: newRequestLogStore(0),
+		client:   upstream.Client(),
+	}
+
+	request := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{
+		"model":"gpt-5.5",
+		"messages":[
+			{"role":"system","content":"Policy A"},
+			{"role":"user","content":"Question 1"},
+			{"role":"assistant","content":"Answer 1"},
+			{"role":"developer","content":"Policy B"},
+			{"role":"user","content":"Question 2"}
+		],
+		"stream":false
+	}`))
+	request.Header.Set("Authorization", "Bearer client-key")
+	request.Header.Set("Content-Type", "application/json")
+	recorder := httptest.NewRecorder()
+	proxy.handleChatCompletions(recorder, request)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", recorder.Code, recorder.Body.String())
+	}
+
+	upstreamBody := <-upstreamRequests
+	input, ok := upstreamBody["input"].([]any)
+	if !ok {
+		t.Fatalf("upstream input = %#v, want array", upstreamBody["input"])
+	}
+	if len(input) != 5 {
+		t.Fatalf("upstream input length = %d, want 5; input = %#v", len(input), input)
+	}
+
+	wantRoles := []string{"developer", "user", "assistant", "developer", "user"}
+	wantText := []string{"Policy A", "Question 1", "Answer 1", "Policy B", "Question 2"}
+	for index := range input {
+		message, ok := input[index].(map[string]any)
+		if !ok {
+			t.Fatalf("upstream input[%d] = %#v, want message", index, input[index])
+		}
+		if message["role"] != wantRoles[index] {
+			t.Fatalf("upstream input[%d] role = %#v, want %q", index, message["role"], wantRoles[index])
+		}
+		content, ok := message["content"].([]any)
+		if !ok || len(content) != 1 {
+			t.Fatalf("upstream input[%d] content = %#v, want one part", index, message["content"])
+		}
+		part, ok := content[0].(map[string]any)
+		if !ok || part["text"] != wantText[index] {
+			t.Fatalf("upstream input[%d] content = %#v, want %q", index, content[0], wantText[index])
+		}
 	}
 }
 

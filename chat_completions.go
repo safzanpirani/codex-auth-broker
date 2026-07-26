@@ -430,7 +430,6 @@ func translateLegacyFunctionChoice(choice any) (any, error) {
 
 func translateChatMessages(messages []any) ([]any, string, error) {
 	input := make([]any, 0, len(messages))
-	var instructions []string
 	for index, rawMessage := range messages {
 		message, ok := rawMessage.(map[string]any)
 		if !ok {
@@ -439,13 +438,11 @@ func translateChatMessages(messages []any) ([]any, string, error) {
 		role := stringField(message, "role")
 		switch role {
 		case "system", "developer":
-			text, err := chatTextOnlyContent(message["content"])
+			content, err := translateChatMessageContent(message["content"], "input_text", false)
 			if err != nil {
 				return nil, "", chatError(fmt.Sprintf("messages.%d.content", index), "%v", err)
 			}
-			if text != "" {
-				instructions = append(instructions, text)
-			}
+			input = append(input, map[string]any{"role": "developer", "content": content})
 		case "user":
 			content, err := translateChatMessageContent(message["content"], "input_text", true)
 			if err != nil {
@@ -476,7 +473,7 @@ func translateChatMessages(messages []any) ([]any, string, error) {
 			return nil, "", chatError(fmt.Sprintf("messages.%d.role", index), "unsupported message role %q", role)
 		}
 	}
-	return input, strings.Join(instructions, "\n\n"), nil
+	return input, "", nil
 }
 
 func translateChatAssistantMessage(message map[string]any) ([]any, error) {
