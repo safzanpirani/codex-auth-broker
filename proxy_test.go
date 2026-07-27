@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -376,5 +377,141 @@ func TestRequestLogStoreBoundsAndOrder(t *testing.T) {
 	}
 	if snapshot.RequestLog[0].Model != "third" || snapshot.RequestLog[1].Model != "second" {
 		t.Fatalf("request order = %#v, want newest first", snapshot.RequestLog)
+	}
+}
+
+func TestNormalizeResponsesBodyDetectsCompactionTrigger(t *testing.T) {
+	body := map[string]any{
+		"model": "gpt-5.3-codex",
+		"input": []any{
+			map[string]any{"role": "user", "content": "hello"},
+			map[string]any{"type": "compaction_trigger"},
+		},
+	}
+	req := httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
+	info := normalizeResponsesBody(body, config{}, req)
+
+	if !info.CompactionTrigger {
+		t.Fatal("CompactionTrigger = false, want true")
+	}
+	// The trigger item must survive normalization untouched, or the backend
+	// answers the turn instead of returning a checkpoint.
+	items, ok := body["input"].([]any)
+	if !ok || len(items) != 2 {
+		t.Fatalf("input = %#v, want the original 2 items", body["input"])
+	}
+	last, _ := items[1].(map[string]any)
+	if last["type"] != "compaction_trigger" {
+		t.Fatalf("last input item = %#v, want compaction_trigger", items[1])
+	}
+}
+
+func TestNormalizeResponsesBodyNoCompactionTrigger(t *testing.T) {
+	body := map[string]any{"model": "gpt-5.3-codex", "input": "hello"}
+	req := httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
+	if info := normalizeResponsesBody(body, config{}, req); info.CompactionTrigger {
+		t.Fatal("CompactionTrigger = true for an ordinary turn")
+	}
+}
+
+func TestCodexBetaFeatures(t *testing.T) {
+	tests := []struct {
+		name       string
+		client     []string
+		compaction bool
+		want       string
+	}{
+		{name: "absent", want: ""},
+		{name: "forwards client value", client: []string{"some_feature"}, want: "some_feature"},
+		{
+			name:       "adds gate when client omitted it",
+			client:     []string{"some_feature"},
+			compaction: true,
+			want:       "some_feature, " + remoteCompactionFeature,
+		},
+		{
+			name:       "does not duplicate an existing gate",
+			client:     []string{remoteCompactionFeature},
+			compaction: true,
+			want:       remoteCompactionFeature,
+		},
+		{
+			name:       "adds gate with no client header",
+			compaction: true,
+			want:       remoteCompactionFeature,
+		},
+		{
+			name:   "joins repeated headers",
+			client: []string{"a", "b"},
+			want:   "a, b",
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
+			for _, value := range tc.client {
+				req.Header.Add(codexBetaFeaturesHeader, value)
+			}
+			if got := codexBetaFeatures(req, tc.compaction); got != tc.want {
+				t.Fatalf("codexBetaFeatures() = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestAggregateResponsesSSEKeepsCompactionItem(t *testing.T) {
+	stream := strings.Join([]string{
+		`data: {"type":"response.output_item.done","output_index":0,"item":{"type":"compaction","encrypted_content":"gAAAA-opaque"}}`,
+		"",
+		`data: {"type":"response.completed","response":{"id":"resp_1","output":[]}}`,
+		"",
+		"data: [DONE]",
+		"",
+	}, "\n")
+
+	final, err := aggregateResponsesSSE(strings.NewReader(stream))
+	if err != nil {
+		t.Fatalf("aggregateResponsesSSE: %v", err)
+	}
+	output, ok := final["output"].([]any)
+	if !ok || len(output) != 1 {
+		t.Fatalf("output = %#v, want 1 item", final["output"])
+	}
+	item, _ := output[0].(map[string]any)
+	if item["type"] != "compaction" || item["encrypted_content"] != "gAAAA-opaque" {
+		t.Fatalf("output item = %#v, want the compaction checkpoint intact", output[0])
+	}
+}
+
+func TestBuildUpstreamRequestForwardsCompactionGate(t *testing.T) {
+	p := &responsesProxy{cfg: config{upstreamURL: "https://example.invalid/codex/responses", upstreamOriginator: "codex_cli_rs"}}
+	body := map[string]any{
+		"model": "gpt-5.3-codex",
+		"input": []any{map[string]any{"type": "compaction_trigger"}},
+	}
+	r := httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
+	info := normalizeResponsesBody(body, config{}, r)
+
+	req, err := p.buildUpstreamRequest(context.Background(), []byte("{}"), info, body, r, accessMaterial{AccessToken: "tok", AccountID: "acct"})
+	if err != nil {
+		t.Fatalf("buildUpstreamRequest: %v", err)
+	}
+	if got := req.Header.Get(codexBetaFeaturesHeader); got != remoteCompactionFeature {
+		t.Fatalf("%s = %q, want %q", codexBetaFeaturesHeader, got, remoteCompactionFeature)
+	}
+}
+
+func TestBuildUpstreamRequestOmitsBetaFeaturesByDefault(t *testing.T) {
+	p := &responsesProxy{cfg: config{upstreamURL: "https://example.invalid/codex/responses", upstreamOriginator: "codex_cli_rs"}}
+	body := map[string]any{"model": "gpt-5.3-codex", "input": "hello"}
+	r := httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
+	info := normalizeResponsesBody(body, config{}, r)
+
+	req, err := p.buildUpstreamRequest(context.Background(), []byte("{}"), info, body, r, accessMaterial{AccessToken: "tok", AccountID: "acct"})
+	if err != nil {
+		t.Fatalf("buildUpstreamRequest: %v", err)
+	}
+	if got := req.Header.Get(codexBetaFeaturesHeader); got != "" {
+		t.Fatalf("%s = %q, want it unset on an ordinary turn", codexBetaFeaturesHeader, got)
 	}
 }

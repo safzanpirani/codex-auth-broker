@@ -21,6 +21,15 @@ import (
 
 const maxRequestBodyBytes = 128 * 1024 * 1024
 
+const (
+	// codexBetaFeaturesHeader opts a request into experimental Codex backend
+	// features. Clients send it; the broker forwards it rather than inventing it.
+	codexBetaFeaturesHeader = "x-codex-beta-features"
+	// remoteCompactionFeature gates native Codex compaction. A request carrying a
+	// compaction_trigger input item is rejected upstream without it.
+	remoteCompactionFeature = "remote_compaction_v2"
+)
+
 type responsesProxy struct {
 	cfg      config
 	pool     *accountPool
@@ -49,6 +58,7 @@ type requestInfo struct {
 	PromptCacheKey          string
 	PromptCacheRetentionSet bool
 	PromptCacheRetention    string
+	CompactionTrigger       bool
 }
 
 func (p *responsesProxy) handleHealth(w http.ResponseWriter, _ *http.Request) {
@@ -334,6 +344,9 @@ func (p *responsesProxy) buildUpstreamRequest(ctx context.Context, encoded []byt
 	} else {
 		req.Header.Set("Accept", "application/json, text/event-stream")
 	}
+	if features := codexBetaFeatures(r, info.CompactionTrigger); features != "" {
+		req.Header.Set(codexBetaFeaturesHeader, features)
+	}
 	if id := requestID(r, body); id != "" {
 		req.Header.Set("session_id", id)
 		req.Header.Set("x-client-request-id", id)
@@ -431,6 +444,7 @@ func normalizeResponsesBody(body map[string]any, cfg config, r *http.Request) re
 	stableKey := stablePromptCacheKey(r, body)
 	removeUnsupportedParams(body)
 	normalizeInput(body)
+	info.CompactionTrigger = hasCompactionTrigger(body)
 	if stringField(body, "instructions") == "" {
 		body["instructions"] = defaultInstructions
 	}
@@ -615,6 +629,39 @@ func normalizeInput(body map[string]any) {
 			},
 		}
 	}
+}
+
+// hasCompactionTrigger reports whether the input carries a compaction_trigger
+// item, which is how a client asks Codex to fold the conversation into an
+// encrypted checkpoint instead of answering the turn.
+func hasCompactionTrigger(body map[string]any) bool {
+	items, ok := body["input"].([]any)
+	if !ok {
+		return false
+	}
+	for _, raw := range items {
+		item, ok := raw.(map[string]any)
+		if !ok {
+			continue
+		}
+		if stringField(item, "type") == "compaction_trigger" {
+			return true
+		}
+	}
+	return false
+}
+
+// codexBetaFeatures forwards the client's requested beta features, adding the
+// remote-compaction gate when the body needs it but the client omitted it.
+func codexBetaFeatures(r *http.Request, compaction bool) string {
+	value := ""
+	if r != nil {
+		value = strings.Join(r.Header.Values(codexBetaFeaturesHeader), ", ")
+	}
+	if compaction {
+		value = mergeHeaderToken(value, remoteCompactionFeature)
+	}
+	return strings.TrimSpace(value)
 }
 
 func removeUnsupportedParams(body map[string]any) {

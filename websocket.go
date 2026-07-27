@@ -135,6 +135,7 @@ func (p *responsesProxy) responsesWebSocketHeaders(r *http.Request, access acces
 		headers.Set("User-Agent", headers.Get("originator")+"/"+p.cfg.modelsClientVersion)
 	}
 	for _, key := range []string{
+		codexBetaFeaturesHeader,
 		"x-codex-turn-state",
 		"x-codex-turn-metadata",
 		"x-codex-parent-thread-id",

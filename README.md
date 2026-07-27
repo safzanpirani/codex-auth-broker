@@ -152,6 +152,11 @@ curl -sS http://127.0.0.1:8317/v1/chat/completions \
 See [`docs/chat-completions.md`](docs/chat-completions.md) for streaming,
 function calling, cache behavior, and current compatibility boundaries.
 
+Native Codex compaction passes through: send a `compaction_trigger` input item
+and the broker forwards the `remote_compaction_v2` gate and relays the encrypted
+checkpoint back untouched. The client owns checkpoint storage and replay — see
+[`docs/compaction.md`](docs/compaction.md).
+
 Responses WebSocket clients can use the same base URL and bearer key. The
 broker implements the `responses_websockets=2026-02-06` protocol, forwards
 Codex turn-state/model handshake headers, and applies the same model and request
