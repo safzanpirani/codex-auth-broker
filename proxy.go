@@ -103,7 +103,7 @@ func (p *responsesProxy) handleModels(w http.ResponseWriter, r *http.Request) {
 			"owned_by": "codex-auth-broker",
 		})
 	}
-	logEntry.Entry.Status = http.StatusOK
+	logEntry.markStatus(http.StatusOK)
 	writeJSON(w, http.StatusOK, map[string]any{"object": "list", "data": models})
 }
 
@@ -220,7 +220,7 @@ func (p *responsesProxy) handleResponses(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	defer resp.Body.Close()
-	logEntry.Entry.UpstreamStatus = resp.StatusCode
+	logEntry.markUpstreamStatus(resp.StatusCode)
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		responseBody, _ := io.ReadAll(io.LimitReader(resp.Body, 64*1024))
@@ -245,14 +245,17 @@ func (p *responsesProxy) handleResponses(w http.ResponseWriter, r *http.Request)
 			return
 		}
 		logEntry.markUsage(logUsage(finalResponse))
-		logEntry.Entry.Status = http.StatusOK
+		recordAppliedServiceTier(logEntry, info.ServiceTier, extractServiceTier(finalResponse))
+		logEntry.markStatus(http.StatusOK)
 		writeJSON(w, http.StatusOK, finalResponse)
 		return
 	}
-	logEntry.Entry.Status = resp.StatusCode
+	logEntry.markStatus(resp.StatusCode)
 	copyResponseHeaders(w, resp.Header, true)
 	w.WriteHeader(resp.StatusCode)
-	logEntry.markUsage(copyStreamingResponse(w, resp.Body))
+	usage, appliedTier := copyStreamingResponse(w, resp.Body)
+	logEntry.markUsage(usage)
+	recordAppliedServiceTier(logEntry, info.ServiceTier, appliedTier)
 }
 
 // dispatchUpstream sends the (already-encoded, stream=true) responses request,
@@ -356,18 +359,6 @@ func (p *responsesProxy) writeDispatchFailure(w http.ResponseWriter, logEntry *p
 		return
 	}
 	writeProxyError(w, fail.status, valueOr(detail, fmt.Sprintf("upstream returned %d", fail.status)))
-}
-
-func (p *responsesProxy) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
-	logEntry := p.beginRequestLog(r)
-	defer logEntry.finish()
-	if !p.authorizedClient(r) {
-		logEntry.markError(http.StatusUnauthorized, "unauthorized")
-		writeProxyError(w, http.StatusUnauthorized, "unauthorized")
-		return
-	}
-	logEntry.markError(http.StatusNotImplemented, "not implemented")
-	writeProxyError(w, http.StatusNotImplemented, "Factory Droid uses /v1/responses; /v1/chat/completions is not implemented yet")
 }
 
 func (p *responsesProxy) authorizedClient(r *http.Request) bool {
@@ -566,6 +557,30 @@ func reasoningEffortFromBody(body map[string]any) string {
 	return strings.TrimSpace(effort)
 }
 
+// extractServiceTier reads the service_tier the Codex upstream reports it
+// actually applied, echoed back on the final response object. An empty string
+// means upstream did not report one.
+func extractServiceTier(response map[string]any) string {
+	if response == nil {
+		return ""
+	}
+	return strings.ToLower(strings.TrimSpace(stringField(response, "service_tier")))
+}
+
+// recordAppliedServiceTier logs the requested vs. applied service tier so you
+// can confirm the broker forwarded it AND whether upstream honored it (e.g.
+// "ultrafast" silently downgraded to "default"), and stores it on the request
+// log entry for the dashboard.
+func recordAppliedServiceTier(logEntry *pendingRequestLog, requested, applied string) {
+	logEntry.markAppliedServiceTier(applied)
+	if requested == "" && applied == "" {
+		return
+	}
+	honored := applied != "" && applied == requested
+	log.Printf("service_tier requested=%s applied=%s honored=%t",
+		valueOr(requested, "none"), valueOr(applied, "none"), honored)
+}
+
 func normalizeServiceTier(body map[string]any) string {
 	raw := stringField(body, "service_tier")
 	if raw == "" {
@@ -573,7 +588,7 @@ func normalizeServiceTier(body map[string]any) string {
 	}
 	normalized := strings.ToLower(strings.TrimSpace(raw))
 	switch normalized {
-	case "auto", "default", "priority":
+	case "auto", "default", "priority", "ultrafast":
 		body["service_tier"] = normalized
 	default:
 		normalized = ""
@@ -603,8 +618,10 @@ func normalizeInput(body map[string]any) {
 }
 
 func removeUnsupportedParams(body map[string]any) {
+	delete(body, "max_tokens")
 	delete(body, "max_output_tokens")
 	delete(body, "max_completion_tokens")
+	delete(body, "maxTokens")
 	delete(body, "maxOutputTokens")
 	delete(body, "maxCompletionTokens")
 	delete(body, "prompt_cache_retention")
@@ -877,16 +894,19 @@ func aggregateResponsesSSE(r io.Reader) (map[string]any, error) {
 }
 
 type tokenUsage struct {
-	InputTokens  *int64
-	OutputTokens *int64
-	CachedTokens *int64
-	TotalTokens  *int64
+	InputTokens      *int64
+	OutputTokens     *int64
+	CachedTokens     *int64
+	CacheWriteTokens *int64
+	ReasoningTokens  *int64
+	TotalTokens      *int64
 }
 
 func logUsage(response map[string]any) tokenUsage {
 	usage := extractTokenUsage(response)
-	log.Printf("response usage input_tokens=%s cached_tokens=%s total_tokens=%s",
-		logTokenValue(usage.InputTokens), logTokenValue(usage.CachedTokens), logTokenValue(usage.TotalTokens))
+	log.Printf("response usage input_tokens=%s cached_tokens=%s cache_write_tokens=%s total_tokens=%s",
+		logTokenValue(usage.InputTokens), logTokenValue(usage.CachedTokens),
+		logTokenValue(usage.CacheWriteTokens), logTokenValue(usage.TotalTokens))
 	return usage
 }
 
@@ -906,6 +926,14 @@ func extractTokenUsage(response map[string]any) tokenUsage {
 	}
 	if details != nil {
 		summary.CachedTokens = firstNumericIntField(details, "cached_tokens")
+		summary.CacheWriteTokens = firstNumericIntField(details, "cache_write_tokens")
+	}
+	outputDetails, _ := usage["output_tokens_details"].(map[string]any)
+	if outputDetails == nil {
+		outputDetails, _ = usage["completion_tokens_details"].(map[string]any)
+	}
+	if outputDetails != nil {
+		summary.ReasoningTokens = firstNumericIntField(outputDetails, "reasoning_tokens")
 	}
 	return summary
 }
@@ -938,9 +966,10 @@ func summarizeUpstreamError(body []byte, status int) string {
 }
 
 type sseUsageTracker struct {
-	pending   string
-	dataLines []string
-	usage     tokenUsage
+	pending     string
+	dataLines   []string
+	usage       tokenUsage
+	serviceTier string
 }
 
 func (t *sseUsageTracker) feed(chunk []byte) {
@@ -991,14 +1020,18 @@ func (t *sseUsageTracker) flush() {
 		if usage := extractTokenUsage(response); usage.hasAny() {
 			t.usage = usage
 		}
+		if tier := extractServiceTier(response); tier != "" {
+			t.serviceTier = tier
+		}
 	}
 }
 
 func (u tokenUsage) hasAny() bool {
-	return u.InputTokens != nil || u.OutputTokens != nil || u.CachedTokens != nil || u.TotalTokens != nil
+	return u.InputTokens != nil || u.OutputTokens != nil || u.CachedTokens != nil ||
+		u.CacheWriteTokens != nil || u.ReasoningTokens != nil || u.TotalTokens != nil
 }
 
-func copyStreamingResponse(w http.ResponseWriter, r io.Reader) tokenUsage {
+func copyStreamingResponse(w http.ResponseWriter, r io.Reader) (tokenUsage, string) {
 	buf := make([]byte, 32*1024)
 	flusher, _ := w.(http.Flusher)
 	tracker := &sseUsageTracker{}
@@ -1007,14 +1040,14 @@ func copyStreamingResponse(w http.ResponseWriter, r io.Reader) tokenUsage {
 		if n > 0 {
 			tracker.feed(buf[:n])
 			if _, writeErr := w.Write(buf[:n]); writeErr != nil {
-				return tracker.finish()
+				return tracker.finish(), tracker.serviceTier
 			}
 			if flusher != nil {
 				flusher.Flush()
 			}
 		}
 		if readErr != nil {
-			return tracker.finish()
+			return tracker.finish(), tracker.serviceTier
 		}
 	}
 }

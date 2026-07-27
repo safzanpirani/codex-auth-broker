@@ -143,8 +143,8 @@ Compatibility normalizations:
 - Missing `instructions` gets a compact default.
 - Missing `store` becomes `false`.
 - Missing `include` becomes `["reasoning.encrypted_content"]`.
-- `max_output_tokens`, `max_completion_tokens`, `maxOutputTokens`,
-  `prompt_cache_retention`, `stream_options`, `user`, `service_tier`, and
+- `max_tokens`, `max_output_tokens`, `max_completion_tokens`, `maxOutputTokens`,
+  `prompt_cache_retention`, `stream_options`, `user`, and
   related OpenAI SDK compatibility fields are stripped because the Codex
   backend rejects them.
 - Non-streaming requests are implemented by forcing upstream streaming and
@@ -193,5 +193,35 @@ should also retain enough logical conversation state to retry without
 
 ## `POST /v1/chat/completions`
 
-Returns HTTP 501. Factory Droid uses `/v1/responses`; Chat Completions support
-should only be added when a real client requires it.
+Accepts OpenAI Chat Completions-shaped requests and translates them through the
+same Codex Responses backend, auth pool, model normalization, cache affinity,
+request log, and usage accounting as `/v1/responses`.
+
+Supported compatibility surface:
+
+- Non-streaming `chat.completion` objects and streaming
+  `chat.completion.chunk` SSE with `[DONE]`.
+- `system`, `developer`, `user`, `assistant`, and `tool` messages.
+- Text, image URL/data URL, and file input content.
+- Function tools, forced function choices, parallel tool calls, and tool
+  result history.
+- `response_format` text, JSON object, and JSON schema output.
+- Reasoning effort, verbosity, service tier, metadata, and Factory model
+  effort suffixes.
+- `stream_options.include_usage`, including cached reads and cache writes when
+  upstream reports them.
+- Stable `prompt_cache_key` preservation/injection. The translation is
+  deterministic so resending the same conversation prefix remains cacheable.
+
+Current boundaries:
+
+- Only `n: 1` is supported.
+- Audio input/output and custom tools are rejected.
+- Sampling fields accepted by the Responses backend are forwarded. Chat-only
+  controls with no Codex Responses equivalent, including max-token aliases,
+  are ignored or stripped.
+- `prompt_cache_retention` and `prompt_cache_options` are recorded as intent
+  where applicable but stripped because the ChatGPT Codex endpoint rejects
+  them. The backend owns cache retention.
+
+See [`chat-completions.md`](chat-completions.md) for examples.

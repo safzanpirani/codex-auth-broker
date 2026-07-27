@@ -168,7 +168,8 @@ Primary model: gpt-5.5
 Reasoning: omit reasoning for off/default, or send reasoning.effort low/medium/high/xhigh (gpt-5.6 also accepts max)
 Prompt cache key: use a stable project key, for example "safzan-coding-agent"
 
-Do not use /v1/chat/completions. Use /v1/responses only.
+Use /v1/responses for this provider configuration. The broker also supports
+/v1/chat/completions for clients that require the Chat Completions protocol.
 Do not ask for, read, copy, or store ~/.codex/auth.json.
 Do not handle Codex refresh tokens. The broker owns OAuth refresh locally.
 ```
@@ -188,7 +189,8 @@ Primary model: gpt-5.5
 Prompt cache key: use a stable project key, for example "safzan-coding-agent"
 
 Do not use this over the public internet.
-Do not use /v1/chat/completions. Use /v1/responses only.
+Prefer /v1/responses for this agent. Use /v1/chat/completions only when the
+client does not support Responses.
 Do not ask for, read, copy, or store ~/.codex/auth.json.
 ```
 
@@ -354,7 +356,8 @@ contents.
 
 ## Compatibility Notes
 
-- Use `/v1/responses`, not `/v1/chat/completions`.
+- Prefer `/v1/responses` for native reasoning items and Responses WebSocket
+  continuation. `/v1/chat/completions` is available for Chat-only clients.
 - `prompt_cache_key` is preserved or injected so repeated long prompts can hit
   model-side prompt caching.
 - `prompt_cache_retention`, `prompt_cache_options`, max-token aliases,
