@@ -15,7 +15,10 @@ out="${3:-./codex-auth-broker}"
 
 version="$(git describe --tags --always --dirty 2>/dev/null || echo dev)"
 commit="$(git rev-parse --short HEAD 2>/dev/null || echo unknown)"
-if [ -n "$(git status --porcelain 2>/dev/null)" ]; then
+# Tracked changes only. Untracked files here are build artifacts and scratch
+# dirs (codex-auth-broker.bak-*, plans/), and they say nothing about whether the
+# compiled source differs from the commit.
+if ! git diff --quiet HEAD 2>/dev/null; then
   commit="${commit}-dirty"
 fi
 # Plain UTC: `date -r` means "epoch seconds" on BSD/macOS but "read this file"
