@@ -244,7 +244,7 @@ func (p *responsesProxy) handleResponses(w http.ResponseWriter, r *http.Request)
 		}
 		copyResponseHeaders(w, resp.Header, info.Stream)
 		w.WriteHeader(resp.StatusCode)
-		_, _ = w.Write([]byte(redactTokenLikeText(string(responseBody))))
+		_, _ = w.Write(normalizeUpstreamErrorBody(responseBody, resp.StatusCode))
 		return
 	}
 	if !info.Stream {
@@ -445,7 +445,13 @@ func normalizeResponsesBody(body map[string]any, cfg config, r *http.Request) re
 	removeUnsupportedParams(body)
 	normalizeInput(body)
 	info.CompactionTrigger = hasCompactionTrigger(body)
-	if stringField(body, "instructions") == "" {
+	// Only supply a placeholder when the request carries no prompt at all. A
+	// client that puts its system prompt in the input (OpenClaw sends a
+	// developer-role item, and system-role items are demoted into one above)
+	// has already said who the model is; injecting the default on top of that
+	// puts "You are a helpful coding assistant." in the highest-priority slot,
+	// outranking the caller's own persona.
+	if stringField(body, "instructions") == "" && !hasSystemOrDeveloperMessage(body) {
 		body["instructions"] = defaultInstructions
 	}
 	if _, ok := body["include"]; !ok {
@@ -638,6 +644,26 @@ func normalizeInput(body map[string]any) {
 	case []any:
 		demoteSystemRoles(input)
 	}
+}
+
+// hasSystemOrDeveloperMessage reports whether the input already carries a
+// prompt-bearing item, i.e. whether the caller has stated the model's role.
+func hasSystemOrDeveloperMessage(body map[string]any) bool {
+	items, ok := body["input"].([]any)
+	if !ok {
+		return false
+	}
+	for _, raw := range items {
+		item, ok := raw.(map[string]any)
+		if !ok {
+			continue
+		}
+		switch stringField(item, "role") {
+		case "system", "developer":
+			return true
+		}
+	}
+	return false
 }
 
 // demoteSystemRoles rewrites system-role input items to developer. The public
@@ -1028,6 +1054,54 @@ func logTokenValue(value *int64) string {
 		return "unknown"
 	}
 	return fmt.Sprintf("%d", *value)
+}
+
+// normalizeUpstreamErrorBody rewraps an upstream error into the OpenAI error
+// envelope when it does not already use one.
+//
+// The Codex backend reports failures as {"detail":"..."} — faithful to relay,
+// but no OpenAI-compatible client reads that shape. They look for
+// error.message, find nothing, and surface the failure as a bare status with no
+// reason: OpenClaw logged "400 status code (no body)" for a plain
+// {"detail":"System messages are not allowed"}, misclassified it as context
+// overflow, and spent three retries and a failed auto-compaction on it. Bodies
+// that already carry an "error" object are passed through untouched.
+func normalizeUpstreamErrorBody(body []byte, status int) []byte {
+	redacted := redactTokenLikeText(string(body))
+	var parsed map[string]any
+	if err := json.Unmarshal([]byte(redacted), &parsed); err != nil {
+		return []byte(redacted)
+	}
+	if _, ok := parsed["error"]; ok {
+		return []byte(redacted)
+	}
+	message := stringField(parsed, "detail")
+	if message == "" {
+		message = stringField(parsed, "message")
+	}
+	if message == "" {
+		message = fmt.Sprintf("upstream returned %d", status)
+	}
+	envelope := map[string]any{
+		"error": map[string]any{
+			"message": message,
+			"type":    "upstream_error",
+			"code":    status,
+		},
+	}
+	// Keep the original fields alongside the envelope so nothing is lost for
+	// clients (or humans) that were reading the upstream shape directly.
+	for key, value := range parsed {
+		if key == "error" {
+			continue
+		}
+		envelope[key] = value
+	}
+	encoded, err := json.Marshal(envelope)
+	if err != nil {
+		return []byte(redacted)
+	}
+	return encoded
 }
 
 func summarizeUpstreamError(body []byte, status int) string {

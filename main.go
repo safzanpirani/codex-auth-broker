@@ -17,7 +17,14 @@ const (
 	defaultListen      = "127.0.0.1:8317"
 	defaultRefreshSkew = 10 * time.Minute
 	defaultHTTPTimeout = 10 * time.Minute
-	defaultPromptKey   = "factory-droid"
+	// defaultPromptKey is empty on purpose. prompt_cache_key scopes the
+	// backend's cache routing affinity, so one constant shared by every client
+	// and every conversation funnels unrelated transcripts into a single bucket
+	// where they evict each other and only the common prefix stays hot. With no
+	// key the backend hashes the prefix unscoped, which is strictly better than
+	// a colliding one. Clients that send their own key, or a session id the
+	// broker can derive one from, are unaffected either way.
+	defaultPromptKey   = ""
 	defaultUpstreamURL = "https://chatgpt.com/backend-api/codex/responses"
 	defaultModelsURL   = "https://chatgpt.com/backend-api/codex/models"
 	defaultUsageURL    = "https://chatgpt.com/backend-api/wham/usage"

@@ -183,14 +183,16 @@ The key is resolved in this order:
    `conversation_id` (either casing) in the body, or a `session_id` header.
    Per-request ids such as `x-request-id` are never used: they rotate every call,
    which scopes the cache to a single request and gives zero reuse.
-3. The configured constant, `factory-droid` by default.
+3. The configured constant, unset by default.
 
 Step 2 outranks step 3 on purpose. `prompt_cache_key` drives the backend's cache
 routing affinity, so one constant shared by every client and every conversation
 puts them all in a single bucket where unrelated long transcripts evict each
 other and only the common system+tools prefix stays hot. The constant is the
-last-resort slot for clients that expose no session identity at all. Set
-`--prompt-cache-key ""` to disable that fallback.
+last-resort slot for clients that expose no session identity at all, and it is
+unset by default: with no key the backend hashes the prefix unscoped, which is
+strictly better than a colliding one. Set `--prompt-cache-key <value>` only when
+a fleet of otherwise-anonymous clients really should share one cache bucket.
 
 The public OpenAI Responses API exposes cache-retention controls. The ChatGPT
 Codex OAuth endpoint used by this broker applies its cache policy server-side
@@ -358,7 +360,7 @@ Flags and equivalent environment variables:
 | `--auth-files` | `CODEX_AUTH_FILES` | empty; comma-separated pool for [multi-account failover](#multi-account-failover) (overrides `--auth-file`) |
 | `--api-key` | `CODEX_AUTH_BROKER_API_KEY` | empty |
 | `--api-key-file` | `CODEX_AUTH_BROKER_API_KEY_FILE` | empty |
-| `--prompt-cache-key` | `CODEX_AUTH_BROKER_PROMPT_CACHE_KEY` | `factory-droid` |
+| `--prompt-cache-key` | `CODEX_AUTH_BROKER_PROMPT_CACHE_KEY` | _(unset)_ |
 | `--prompt-cache-retention` | `CODEX_AUTH_BROKER_PROMPT_CACHE_RETENTION` | records legacy client intent for compatibility; never forwarded |
 | `--usage-url` | `CODEX_AUTH_BROKER_USAGE_URL` | ChatGPT wham usage endpoint |
 | `--models-url` | `CODEX_AUTH_BROKER_MODELS_URL` | ChatGPT Codex models endpoint |

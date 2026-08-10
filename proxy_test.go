@@ -570,3 +570,63 @@ func TestNormalizeInputDemotesSystemRole(t *testing.T) {
 		t.Fatalf("user role altered: got %v", got)
 	}
 }
+
+func TestNormalizeUpstreamErrorBodyWrapsDetail(t *testing.T) {
+	out := normalizeUpstreamErrorBody([]byte(`{"detail":"System messages are not allowed"}`), 400)
+	var parsed map[string]any
+	if err := json.Unmarshal(out, &parsed); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	envelope, ok := parsed["error"].(map[string]any)
+	if !ok {
+		t.Fatalf("no error envelope in %s", out)
+	}
+	if envelope["message"] != "System messages are not allowed" {
+		t.Fatalf("message = %#v", envelope["message"])
+	}
+	if parsed["detail"] != "System messages are not allowed" {
+		t.Fatalf("original detail field dropped: %s", out)
+	}
+}
+
+func TestNormalizeUpstreamErrorBodyPassesThroughEnvelope(t *testing.T) {
+	original := `{"error":{"message":"already shaped","type":"invalid_request_error"}}`
+	out := normalizeUpstreamErrorBody([]byte(original), 400)
+	if string(out) != original {
+		t.Fatalf("envelope rewritten: %s", out)
+	}
+}
+
+func TestNormalizeUpstreamErrorBodyLeavesNonJSONAlone(t *testing.T) {
+	out := normalizeUpstreamErrorBody([]byte("gateway timeout"), 504)
+	if string(out) != "gateway timeout" {
+		t.Fatalf("non-JSON body rewritten: %s", out)
+	}
+}
+
+func TestInstructionsNotInjectedOverCallerPrompt(t *testing.T) {
+	body := map[string]any{
+		"model": "gpt-5.5",
+		"input": []any{
+			map[string]any{"type": "message", "role": "system", "content": "you are ace"},
+			map[string]any{"type": "message", "role": "user", "content": "hi"},
+		},
+	}
+	req := httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
+	normalizeResponsesBody(body, config{}, req)
+	if got := body["instructions"]; got == defaultInstructions {
+		t.Fatalf("placeholder instructions injected over the caller's own prompt")
+	}
+}
+
+func TestInstructionsInjectedWhenNoPromptAtAll(t *testing.T) {
+	body := map[string]any{
+		"model": "gpt-5.5",
+		"input": []any{map[string]any{"type": "message", "role": "user", "content": "hi"}},
+	}
+	req := httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
+	normalizeResponsesBody(body, config{}, req)
+	if body["instructions"] != defaultInstructions {
+		t.Fatalf("instructions = %#v, want the default placeholder", body["instructions"])
+	}
+}

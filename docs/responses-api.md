@@ -382,9 +382,12 @@ Recommended agent behavior:
 ```
 
 Use the same `prompt_cache_key` for the same project or long-running agent
-session. If you omit it, the broker injects its configured default key, currently
-`factory-droid`, but agents should send their own stable key so dashboard rows
-and cache affinity are easier to reason about.
+session, and a different one per session. The key scopes the backend's cache
+routing affinity, so reusing one value across unrelated conversations puts them
+in a single bucket where they evict each other. If you omit it the broker falls
+back to a session id derived from the request, then to its configured constant
+(unset by default); sending your own stable key is still preferred, since it
+also makes dashboard rows easier to reason about.
 
 Do not send `prompt_cache_retention` or `prompt_cache_options`. Those controls
 belong to the public OpenAI Responses API; the ChatGPT Codex OAuth endpoint
