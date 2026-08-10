@@ -231,20 +231,60 @@ func TestPromptCacheKeyIgnoresRotatingRequestID(t *testing.T) {
 	}
 }
 
-func TestPromptCacheKeyConfigWinsOverRequest(t *testing.T) {
+func TestPromptCacheKeyStableIDWinsOverConfigConstant(t *testing.T) {
+	// The configured constant is shared by every client and every conversation.
+	// Letting it outrank a per-conversation id would funnel unrelated transcripts
+	// into one cache bucket where they evict each other, leaving only the common
+	// prefix hot. A derived session id must win.
 	body := map[string]any{
 		"model":           "gpt-5.5",
 		"input":           "hello",
 		"conversation_id": "conv-123",
 	}
 	req := httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
-	info := normalizeResponsesBody(body, config{promptCacheKey: "fixed-key"}, req)
+	info := normalizeResponsesBody(body, config{promptCacheKey: "factory-droid"}, req)
 
-	if body["prompt_cache_key"] != "fixed-key" {
-		t.Fatalf("prompt_cache_key = %#v, want fixed-key", body["prompt_cache_key"])
+	if body["prompt_cache_key"] != "conv-123" {
+		t.Fatalf("prompt_cache_key = %#v, want conv-123", body["prompt_cache_key"])
 	}
-	if info.PromptCacheKey != "fixed-key" {
-		t.Fatalf("info.PromptCacheKey = %#v, want fixed-key", info.PromptCacheKey)
+	if info.PromptCacheKey != "conv-123" {
+		t.Fatalf("info.PromptCacheKey = %#v, want conv-123", info.PromptCacheKey)
+	}
+}
+
+func TestPromptCacheKeyConfigUsedWhenNoStableID(t *testing.T) {
+	// No session/conversation id anywhere: the configured constant is the
+	// last-resort slot, for clients that expose no session identity at all.
+	body := map[string]any{
+		"model": "gpt-5.5",
+		"input": "hello",
+	}
+	req := httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
+	info := normalizeResponsesBody(body, config{promptCacheKey: "factory-droid"}, req)
+
+	if body["prompt_cache_key"] != "factory-droid" {
+		t.Fatalf("prompt_cache_key = %#v, want factory-droid", body["prompt_cache_key"])
+	}
+	if info.PromptCacheKey != "factory-droid" || !info.PromptCacheKeySet {
+		t.Fatalf("info cache key = %#v (set=%t), want factory-droid", info.PromptCacheKey, info.PromptCacheKeySet)
+	}
+}
+
+func TestPromptCacheKeyClientValueWinsOverEverything(t *testing.T) {
+	body := map[string]any{
+		"model":            "gpt-5.5",
+		"input":            "hello",
+		"conversation_id":  "conv-123",
+		"prompt_cache_key": "client-chosen",
+	}
+	req := httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
+	info := normalizeResponsesBody(body, config{promptCacheKey: "factory-droid"}, req)
+
+	if body["prompt_cache_key"] != "client-chosen" {
+		t.Fatalf("prompt_cache_key = %#v, want client-chosen", body["prompt_cache_key"])
+	}
+	if info.PromptCacheKey != "client-chosen" {
+		t.Fatalf("info.PromptCacheKey = %#v, want client-chosen", info.PromptCacheKey)
 	}
 }
 
@@ -513,5 +553,20 @@ func TestBuildUpstreamRequestOmitsBetaFeaturesByDefault(t *testing.T) {
 	}
 	if got := req.Header.Get(codexBetaFeaturesHeader); got != "" {
 		t.Fatalf("%s = %q, want it unset on an ordinary turn", codexBetaFeaturesHeader, got)
+	}
+}
+
+func TestNormalizeInputDemotesSystemRole(t *testing.T) {
+	body := map[string]any{"input": []any{
+		map[string]any{"type": "message", "role": "system", "content": "prompt"},
+		map[string]any{"type": "message", "role": "user", "content": "hi"},
+	}}
+	normalizeInput(body)
+	items := body["input"].([]any)
+	if got := items[0].(map[string]any)["role"]; got != "developer" {
+		t.Fatalf("system role not demoted: got %v", got)
+	}
+	if got := items[1].(map[string]any)["role"]; got != "user" {
+		t.Fatalf("user role altered: got %v", got)
 	}
 }

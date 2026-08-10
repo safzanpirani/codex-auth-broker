@@ -176,11 +176,21 @@ This project does not cache generated text. It helps model-side prompt caching
 work by preserving a stable `prompt_cache_key` or injecting one when the client
 does not provide it.
 
-By default:
+The key is resolved in this order:
 
-```text
-prompt_cache_key = factory-droid
-```
+1. `prompt_cache_key` sent by the client.
+2. A conversation-stable id derived from the request — `session_id`,
+   `conversation_id` (either casing) in the body, or a `session_id` header.
+   Per-request ids such as `x-request-id` are never used: they rotate every call,
+   which scopes the cache to a single request and gives zero reuse.
+3. The configured constant, `factory-droid` by default.
+
+Step 2 outranks step 3 on purpose. `prompt_cache_key` drives the backend's cache
+routing affinity, so one constant shared by every client and every conversation
+puts them all in a single bucket where unrelated long transcripts evict each
+other and only the common system+tools prefix stays hot. The constant is the
+last-resort slot for clients that expose no session identity at all. Set
+`--prompt-cache-key ""` to disable that fallback.
 
 The public OpenAI Responses API exposes cache-retention controls. The ChatGPT
 Codex OAuth endpoint used by this broker applies its cache policy server-side

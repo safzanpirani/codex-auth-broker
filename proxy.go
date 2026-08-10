@@ -465,22 +465,29 @@ func normalizeResponsesBody(body map[string]any, cfg config, r *http.Request) re
 	if current := stringField(body, "prompt_cache_key"); current != "" {
 		info.PromptCacheKeySet = true
 		info.PromptCacheKey = current
-	} else if key := strings.TrimSpace(cfg.promptCacheKey); key != "" {
-		body["prompt_cache_key"] = key
-		info.PromptCacheKeySet = true
-		info.PromptCacheKey = key
 	}
 	if stream, ok := body["stream"].(bool); ok {
 		info.Stream = stream
 	}
-	// Fall back to a conversation-stable key so ordinary upstream prompt-cache
-	// affinity can be reused across turns. A per-request id here would rotate the
-	// key every call and defeat prefix matching. The ChatGPT Codex endpoint does
-	// not accept the public API's cache-retention options.
-	if stableKey != "" && !info.PromptCacheKeySet {
-		body["prompt_cache_key"] = stableKey
-		info.PromptCacheKeySet = true
-		info.PromptCacheKey = stableKey
+	// Precedence: an explicit client key, then a conversation-stable id derived
+	// from the request, then the configured constant. The derived id must outrank
+	// the constant: prompt_cache_key drives the backend's cache routing affinity,
+	// so a single value shared by every client and every conversation puts all of
+	// them in one bucket where unrelated 100k transcripts evict each other, and
+	// only the common system+tools prefix stays hot. The constant is the
+	// last-resort slot for clients that expose no session identity at all. A
+	// per-request id is never a candidate — see stablePromptCacheKey. The ChatGPT
+	// Codex endpoint does not accept the public API's cache-retention options.
+	if !info.PromptCacheKeySet {
+		key := stableKey
+		if key == "" {
+			key = strings.TrimSpace(cfg.promptCacheKey)
+		}
+		if key != "" {
+			body["prompt_cache_key"] = key
+			info.PromptCacheKeySet = true
+			info.PromptCacheKey = key
+		}
 	}
 	return info
 }
@@ -627,6 +634,25 @@ func normalizeInput(body map[string]any) {
 					map[string]any{"type": "input_text", "text": text},
 				},
 			},
+		}
+	case []any:
+		demoteSystemRoles(input)
+	}
+}
+
+// demoteSystemRoles rewrites system-role input items to developer. The public
+// Responses API accepts either, but the ChatGPT Codex backend rejects the
+// former outright ({"detail":"System messages are not allowed"}), so a client
+// that sends its prompt the ordinary way fails every request. Developer is the
+// backend's equivalent slot and preserves the item's position in the prefix.
+func demoteSystemRoles(items []any) {
+	for _, raw := range items {
+		item, ok := raw.(map[string]any)
+		if !ok {
+			continue
+		}
+		if stringField(item, "role") == "system" {
+			item["role"] = "developer"
 		}
 	}
 }
