@@ -69,7 +69,7 @@ func TestLookupModelPricingGPT56(t *testing.T) {
 	cases := map[string]float64{
 		"gpt-5.6-sol":   5.00,
 		"gpt-5.6-terra": 2.50,
-		"gpt-5.6-luna":  1.00,
+		"gpt-5.6-luna":  0.20,
 	}
 	for model, wantInput := range cases {
 		pricing, ok := lookupModelPricing(defaultModelPricing, model)

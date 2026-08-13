@@ -21,7 +21,7 @@ type modelPricing struct {
 var defaultModelPricing = map[string]modelPricing{
 	"gpt-5.6-sol":   {InputPerM: 5.00, CachedPerM: 0.50, CacheWritePerM: 6.25, OutputPerM: 30.00},
 	"gpt-5.6-terra": {InputPerM: 2.50, CachedPerM: 0.25, CacheWritePerM: 3.125, OutputPerM: 15.00},
-	"gpt-5.6-luna":  {InputPerM: 1.00, CachedPerM: 0.10, CacheWritePerM: 1.25, OutputPerM: 6.00},
+	"gpt-5.6-luna":  {InputPerM: 0.20, CachedPerM: 0.02, CacheWritePerM: 0.25, OutputPerM: 1.20},
 	"gpt-5.5":       {InputPerM: 5.00, CachedPerM: 0.50, CacheWritePerM: 5.00, OutputPerM: 30.00},
 	"gpt-5.4":       {InputPerM: 2.50, CachedPerM: 0.25, CacheWritePerM: 2.50, OutputPerM: 15.00},
 	"gpt-5.4-mini":  {InputPerM: 0.75, CachedPerM: 0.075, CacheWritePerM: 0.75, OutputPerM: 4.50},
