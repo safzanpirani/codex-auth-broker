@@ -8,8 +8,10 @@ broker there, and point Pi or Factory Droid at `http://127.0.0.1:8317/v1` or a
 private Tailscale address. Your client gets `/v1/responses`; your real Codex
 OAuth refresh token stays on the machine that owns the login.
 
-This is for personal/local infrastructure. Do not expose it on the public
-internet.
+Run it on private networks (localhost, Tailscale, a VPC subnet) with named
+client keys (`--keys-file`) or at least a single `--api-key`. Even with keys
+configured, never expose it on the public internet — it fronts a personal
+Codex account.
 
 ## What It Does
 
@@ -20,7 +22,9 @@ internet.
   - `GET /healthz`
   - `GET /dashboard`
   - `GET /dashboard/api/usage`
+  - `GET /dashboard/api/usage/by-user`
   - `GET /dashboard/api/requests`
+  - `GET /dashboard/api/costs`
   - `GET /v1/models`
   - `GET /v1/responses` (Responses WebSocket upgrade)
   - `POST /v1/responses`
@@ -95,8 +99,11 @@ The API key can be any dummy value unless you start the broker with
 http://127.0.0.1:8317/dashboard
 ```
 
-If you started the broker with `--api-key` or `--api-key-file`, enter the same
-client key in the dashboard. The key is kept in browser session storage.
+If you started the broker with `--api-key`, `--api-key-file`, or `--keys-file`,
+the dashboard requires an admin key: open
+`http://127.0.0.1:8317/dashboard?key=<admin key>` once (the broker exchanges it
+for an HttpOnly cookie and redirects), or enter the key in the dashboard's key
+field (kept in browser session storage and sent as a bearer token).
 
 ## Verify
 
@@ -267,13 +274,71 @@ Dashboard endpoints:
 ```text
 GET    /dashboard
 GET    /dashboard/api/usage
+GET    /dashboard/api/usage/by-user?window=7d
 GET    /dashboard/api/requests?limit=250
 DELETE /dashboard/api/requests
+GET    /dashboard/api/costs
 ```
 
-When `--api-key` is configured, the dashboard API endpoints require the same
-`Authorization: Bearer ...` key as `/v1/responses`. `/dashboard` itself serves
-static HTML so the browser can load the page before you enter the key.
+When any client key is configured (`--api-key`, `--api-key-file`, or
+`--keys-file`), every `/dashboard*` route — the HTML page and the data APIs —
+requires a key with role `admin` (the legacy single `--api-key` counts as
+admin). Two ways in:
+
+- `Authorization: Bearer <admin key>` on each request (what the dashboard's
+  key field and curl use).
+- Visit `/dashboard?key=<admin key>` in a browser once: the broker validates
+  the key, sets it as an HttpOnly cookie, and redirects to `/dashboard`, so
+  the key does not linger in the address bar and the page's own API fetches
+  are authenticated by the cookie.
+
+With no keys configured at all the dashboard stays open, as before. `/healthz`
+is always unauthenticated so process supervisors can probe it.
+
+`GET /dashboard/api/usage/by-user` aggregates the retained request log per
+`(user, model)`: request count, input/output/cached/cache-write tokens, and
+estimated cost. `?window=` accepts `24h`, `7d`, `30d`, `all` (default), or any
+Go duration, filtering by request start time. It reads the persisted JSONL log
+when `--request-log-file` is enabled (full history), else the in-memory ring.
+
+## Named Client Keys
+
+`--keys-file` (or `CODEX_AUTH_BROKER_KEYS_FILE`) points at a JSON array of
+named bearer keys, so each consumer gets its own rotatable credential:
+
+```json
+[
+  { "name": "buildr-backend", "key": "<random>", "role": "client" },
+  { "name": "buildr-sandbox", "key": "<random>", "role": "client" },
+  { "name": "safzan-dev",     "key": "<random>", "role": "admin" },
+  { "name": "old-shared",     "key": "<random>", "role": "client", "disabled": true }
+]
+```
+
+- `role` is `"admin"` (full access including `/dashboard*`) or `"client"`
+  (`/v1/*` only); it defaults to `client` when omitted. Names must be unique.
+- The file is reloaded automatically when its mtime or size changes (checked
+  at most every couple of seconds), so rotation is: add the new key, flip the
+  consumer, mark the old entry `"disabled": true` — no restart. An invalid
+  rewrite is rejected with a log line and the previous key set stays active.
+- Every request is checked against all enabled keys with a constant-time
+  compare per entry; on match the request is attributed to the entry's `name`,
+  which appears as `client_name` in the request log and dashboard.
+- The legacy single `--api-key` keeps working alongside (or instead of) the
+  keys file as an implicit client named `default` with role `admin`, so
+  existing single-key setups keep their dashboard access unchanged.
+
+## Per-User Attribution
+
+Clients may attribute each `/v1/*` request to an end user by sending
+`X-Broker-User: <identity>` (e.g. a Google-SSO email). Fallback for clients
+that cannot set headers: a `prompt_cache_key` of the form `user:<identity>` is
+parsed the same way (the header wins when both are present). The value is
+trimmed, stripped of control characters, and capped at 128 characters; the
+broker trusts it only because the request already carried a valid client key —
+clients own its truthfulness. The user lands in the request log (`user` field)
+next to the token usage and estimated cost, and is aggregated by
+`GET /dashboard/api/usage/by-user`.
 
 ## Pi Coding Agent
 
@@ -360,6 +425,7 @@ Flags and equivalent environment variables:
 | `--auth-files` | `CODEX_AUTH_FILES` | empty; comma-separated pool for [multi-account failover](#multi-account-failover) (overrides `--auth-file`) |
 | `--api-key` | `CODEX_AUTH_BROKER_API_KEY` | empty |
 | `--api-key-file` | `CODEX_AUTH_BROKER_API_KEY_FILE` | empty |
+| `--keys-file` | `CODEX_AUTH_BROKER_KEYS_FILE` | empty; JSON array of named keys, reloaded on change (see [Named Client Keys](#named-client-keys)) |
 | `--prompt-cache-key` | `CODEX_AUTH_BROKER_PROMPT_CACHE_KEY` | _(unset)_ |
 | `--prompt-cache-retention` | `CODEX_AUTH_BROKER_PROMPT_CACHE_RETENTION` | records legacy client intent for compatibility; never forwarded |
 | `--usage-url` | `CODEX_AUTH_BROKER_USAGE_URL` | ChatGPT wham usage endpoint |
@@ -464,15 +530,22 @@ The broker reads and refreshes `~/.codex/auth.json` locally. Clients receive
 only model responses from `/v1/responses` or `/v1/chat/completions`; they do
 not receive access tokens, refresh tokens, or the auth file.
 
-If you bind to anything other than localhost, set `--api-key` or
-`--api-key-file` and use a private network.
+If you bind to anything other than localhost, configure keys — preferably
+per-consumer named keys via `--keys-file`, or at least a single `--api-key` /
+`--api-key-file` — and keep the broker on a private network (Tailscale, a VPC
+security group). Named keys make a leak recoverable: disable the one leaked
+entry instead of rotating a shared secret everywhere. Even so, never expose
+the broker on the public internet.
 
-When a client key is configured, every `/v1/*` endpoint — including the
-`/v1/codex/responses` aliases and Responses WebSocket upgrades — and the
-dashboard API endpoints require `Authorization: Bearer <key>`; the presented
-key is checked with a constant-time compare. `/healthz` stays unauthenticated
-so process supervisors can probe it, and `/dashboard` serves only static HTML
-(the data behind it comes from the authenticated dashboard API).
+When client keys are configured, every `/v1/*` endpoint — including the
+`/v1/codex/responses` aliases and Responses WebSocket upgrades — requires
+`Authorization: Bearer <key>` matching any enabled key, and every
+`/dashboard*` route (HTML page and data APIs, plus `/usage`) requires a key
+with role `admin` via bearer or the dashboard cookie. Each presented key is
+checked against every configured entry with a constant-time compare; keys are
+never logged or persisted, and the request log stores only the matching
+entry's name. `/healthz` stays unauthenticated so process supervisors can
+probe it.
 
 ## Limitations
 
