@@ -14,8 +14,9 @@ func printDoctor(cfg config, overall string, accounts []map[string]any) {
 		"listen":                 cfg.listen,
 		"accounts":               accounts,
 		"accounts_total":         len(accounts),
-		"client_api_key_enabled": cfg.apiKey != "",
+		"client_api_key_enabled": cfg.apiKey != "" || cfg.keysFile != "",
 		"api_key_fingerprint":    optionalFingerprint(cfg.apiKey),
+		"keys_file":              cfg.keysFile,
 		"models":                 cfg.models,
 	}
 	enc := json.NewEncoder(os.Stdout)

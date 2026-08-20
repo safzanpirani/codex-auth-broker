@@ -10,9 +10,83 @@ import (
 	"time"
 )
 
+// dashboardCookieName holds the admin key exchanged via /dashboard?key=... so
+// the browser dashboard stays usable without pasting the key on every visit.
+// HttpOnly; never logged (the redaction rules for keys apply to it).
+const dashboardCookieName = "codex_broker_dashboard_key"
+
+// dashboardAuthStatus classifies a dashboard request: 200 when admin access is
+// granted (or no keys are configured at all, preserving the historical open
+// dashboard), 401 when no valid key was presented, 403 when a valid key was
+// presented but its role is not admin. Accepts Authorization: Bearer and the
+// dashboard cookie.
+func (p *responsesProxy) dashboardAuthStatus(r *http.Request) int {
+	reg := p.registry()
+	if !reg.enabled() {
+		return http.StatusOK
+	}
+	token := bearerToken(r)
+	if token == "" {
+		if cookie, err := r.Cookie(dashboardCookieName); err == nil {
+			token = cookie.Value
+		}
+	}
+	if token == "" {
+		return http.StatusUnauthorized
+	}
+	id, ok := reg.resolve(token)
+	if !ok {
+		return http.StatusUnauthorized
+	}
+	if !id.admin() {
+		return http.StatusForbidden
+	}
+	return http.StatusOK
+}
+
+// requireDashboardAdmin gates a /dashboard* handler; it writes the error
+// response and returns false when access is denied.
+func (p *responsesProxy) requireDashboardAdmin(w http.ResponseWriter, r *http.Request) bool {
+	switch p.dashboardAuthStatus(r) {
+	case http.StatusUnauthorized:
+		writeProxyError(w, http.StatusUnauthorized, "unauthorized")
+		return false
+	case http.StatusForbidden:
+		writeProxyError(w, http.StatusForbidden, "admin key required")
+		return false
+	}
+	return true
+}
+
 func (p *responsesProxy) handleDashboard(w http.ResponseWriter, r *http.Request) {
 	if r.URL.Path != "/" && r.URL.Path != "/dashboard" {
 		http.NotFound(w, r)
+		return
+	}
+	// Browser bootstrap: /dashboard?key=<admin key> exchanges the query param
+	// for an HttpOnly cookie and redirects, so the key does not stay in the
+	// address bar. Bearer-based access works without the cookie.
+	if key := r.URL.Query().Get("key"); key != "" && p.registry().enabled() {
+		id, ok := p.registry().resolve(key)
+		if !ok {
+			writeProxyError(w, http.StatusUnauthorized, "unauthorized")
+			return
+		}
+		if !id.admin() {
+			writeProxyError(w, http.StatusForbidden, "admin key required")
+			return
+		}
+		http.SetCookie(w, &http.Cookie{
+			Name:     dashboardCookieName,
+			Value:    key,
+			Path:     "/",
+			HttpOnly: true,
+			SameSite: http.SameSiteStrictMode,
+		})
+		http.Redirect(w, r, r.URL.Path, http.StatusSeeOther)
+		return
+	}
+	if !p.requireDashboardAdmin(w, r) {
 		return
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
@@ -20,8 +94,7 @@ func (p *responsesProxy) handleDashboard(w http.ResponseWriter, r *http.Request)
 }
 
 func (p *responsesProxy) handleDashboardRequests(w http.ResponseWriter, r *http.Request) {
-	if !p.authorizedClient(r) {
-		writeProxyError(w, http.StatusUnauthorized, "unauthorized")
+	if !p.requireDashboardAdmin(w, r) {
 		return
 	}
 	switch r.Method {
@@ -40,8 +113,7 @@ func (p *responsesProxy) handleDashboardRequests(w http.ResponseWriter, r *http.
 }
 
 func (p *responsesProxy) handleCodexUsage(w http.ResponseWriter, r *http.Request) {
-	if !p.authorizedClient(r) {
-		writeProxyError(w, http.StatusUnauthorized, "unauthorized")
+	if !p.requireDashboardAdmin(w, r) {
 		return
 	}
 	usage, status, err := p.fetchCodexUsage(r.Context())

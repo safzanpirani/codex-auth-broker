@@ -47,8 +47,7 @@ var costWindows = []struct {
 }
 
 func (p *responsesProxy) handleDashboardCosts(w http.ResponseWriter, r *http.Request) {
-	if !p.authorizedClient(r) {
-		writeProxyError(w, http.StatusUnauthorized, "unauthorized")
+	if !p.requireDashboardAdmin(w, r) {
 		return
 	}
 	summary, err := p.requests.costSummary(time.Now().UTC())

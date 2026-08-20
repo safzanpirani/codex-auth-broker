@@ -25,6 +25,8 @@ type requestLogEntry struct {
 	Method                  string   `json:"method"`
 	Path                    string   `json:"path"`
 	Client                  string   `json:"client,omitempty"`
+	ClientName              string   `json:"client_name,omitempty"`
+	User                    string   `json:"user,omitempty"`
 	RequestID               string   `json:"request_id,omitempty"`
 	Model                   string   `json:"model,omitempty"`
 	NormalizedModel         string   `json:"normalized_model,omitempty"`
@@ -164,16 +166,25 @@ func (p *responsesProxy) beginRequestLog(r *http.Request) *pendingRequestLog {
 		return nil
 	}
 	started := time.Now().UTC()
+	entry := requestLogEntry{
+		StartedAt: started.Format(time.RFC3339Nano),
+		Method:    r.Method,
+		Path:      r.URL.Path,
+		Client:    clientAddress(r.RemoteAddr),
+		User:      sanitizeBrokerUser(r.Header.Get(brokerUserHeader)),
+		RequestID: requestIDFromHeaders(r),
+	}
+	// Attribute the entry to the named key that authenticated it. Resolution is
+	// repeated here (handlers also authenticate) but cheap: the keys file is
+	// stat'ed at most every keyRegistryStatInterval. Unauthorized requests keep
+	// an empty client name.
+	if id, ok := p.authenticate(r); ok {
+		entry.ClientName = id.Name
+	}
 	return &pendingRequestLog{
 		store:   p.requests,
 		started: started,
-		Entry: requestLogEntry{
-			StartedAt: started.Format(time.RFC3339Nano),
-			Method:    r.Method,
-			Path:      r.URL.Path,
-			Client:    clientAddress(r.RemoteAddr),
-			RequestID: requestIDFromHeaders(r),
-		},
+		Entry:   entry,
 	}
 }
 
@@ -239,6 +250,9 @@ func (l *pendingRequestLog) markRequest(body map[string]any, info requestInfo, r
 	l.Entry.PromptCacheKey = info.PromptCacheKey
 	l.Entry.PromptCacheRetentionSet = info.PromptCacheRetentionSet
 	l.Entry.PromptCacheRetention = info.PromptCacheRetention
+	if user := extractBrokerUser(r, info.PromptCacheKey); user != "" {
+		l.Entry.User = user
+	}
 	if requestID := requestID(r, body); requestID != "" {
 		l.Entry.RequestID = requestID
 	}
@@ -266,6 +280,47 @@ func (l *pendingRequestLog) markUsage(usage tokenUsage) {
 	l.Entry.CachedTokens = usage.CachedTokens
 	l.Entry.CacheWriteTokens = usage.CacheWriteTokens
 	l.Entry.TotalTokens = usage.TotalTokens
+}
+
+// brokerUserHeader carries the end-user identity a client attributes its
+// request to (e.g. a Google SSO email). Trusted only because the request
+// already carried a valid client key: clients own the truthfulness of it.
+const brokerUserHeader = "X-Broker-User"
+
+// brokerUserCacheKeyPrefix is the zero-client-change fallback: a client that
+// cannot set headers may send prompt_cache_key "user:<identity>" instead. The
+// header wins when both are present.
+const brokerUserCacheKeyPrefix = "user:"
+
+// maxBrokerUserLen caps the stored user identity.
+const maxBrokerUserLen = 128
+
+// extractBrokerUser resolves the per-request user: the X-Broker-User header
+// first, then the prompt_cache_key "user:<identity>" convention.
+func extractBrokerUser(r *http.Request, promptCacheKey string) string {
+	if user := sanitizeBrokerUser(r.Header.Get(brokerUserHeader)); user != "" {
+		return user
+	}
+	if rest, ok := strings.CutPrefix(promptCacheKey, brokerUserCacheKeyPrefix); ok {
+		return sanitizeBrokerUser(rest)
+	}
+	return ""
+}
+
+// sanitizeBrokerUser strips control characters, trims whitespace, caps length,
+// and redacts token-like values so a pasted secret never lands in the log.
+func sanitizeBrokerUser(value string) string {
+	value = strings.Map(func(r rune) rune {
+		if r < 0x20 || r == 0x7f {
+			return -1
+		}
+		return r
+	}, value)
+	value = strings.TrimSpace(value)
+	if len(value) > maxBrokerUserLen {
+		value = value[:maxBrokerUserLen]
+	}
+	return redactTokenLikeText(value)
 }
 
 func requestIDFromHeaders(r *http.Request) string {

@@ -4,7 +4,6 @@ import (
 	"bufio"
 	"bytes"
 	"context"
-	"crypto/subtle"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -39,6 +38,9 @@ type responsesProxy struct {
 	// limiter is the global semaphore around upstream Codex calls. nil means
 	// unlimited; all its methods are nil-safe.
 	limiter *concurrencyLimiter
+	// keys resolves bearer tokens to named clients. nil falls back to an
+	// implicit registry built from cfg.apiKey (see registry()).
+	keys *keyRegistry
 }
 
 // dispatchFailure describes why the failover loop could not return a usable
@@ -387,20 +389,13 @@ func (p *responsesProxy) writeDispatchFailure(w http.ResponseWriter, logEntry *p
 	writeProxyError(w, fail.status, valueOr(detail, fmt.Sprintf("upstream returned %d", fail.status)))
 }
 
+// authorizedClient reports whether the request carries any enabled key (or
+// auth is disabled entirely). Comparison is constant-time per configured key —
+// these keys are the only secrets gating access to the Codex account, so they
+// must not leak byte-by-byte through timing. See keys.go for resolution.
 func (p *responsesProxy) authorizedClient(r *http.Request) bool {
-	want := strings.TrimSpace(p.cfg.apiKey)
-	if want == "" {
-		return true
-	}
-	const prefix = "Bearer "
-	header := r.Header.Get("Authorization")
-	if !strings.HasPrefix(header, prefix) {
-		return false
-	}
-	got := strings.TrimSpace(strings.TrimPrefix(header, prefix))
-	// Constant-time compare: this key is the only secret gating access to the
-	// Codex account, so it must not leak byte-by-byte through timing.
-	return subtle.ConstantTimeCompare([]byte(got), []byte(want)) == 1
+	_, ok := p.authenticate(r)
+	return ok
 }
 
 func decodeRequestBody(r io.Reader, contentEncoding string) (map[string]any, error) {

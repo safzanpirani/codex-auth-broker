@@ -57,6 +57,7 @@ type config struct {
 	authFiles            []string
 	apiKey               string
 	apiKeyFile           string
+	keysFile             string
 	promptCacheKey       string
 	promptCacheRetention string
 	refreshSkew          time.Duration
@@ -134,6 +135,10 @@ func runServe(args []string) error {
 		requests.persist = persist
 		log.Printf("persisting request metadata (no prompts or tokens) to %s", persist.path)
 	}
+	keys, err := newKeyRegistry(cfg.apiKey, cfg.keysFile)
+	if err != nil {
+		return err
+	}
 	proxy := &responsesProxy{
 		cfg:      cfg,
 		pool:     pool,
@@ -142,6 +147,7 @@ func runServe(args []string) error {
 			Timeout: cfg.timeout,
 		},
 		limiter: newConcurrencyLimiter(cfg.maxConcurrent, defaultQueueWait),
+		keys:    keys,
 	}
 
 	mux := http.NewServeMux()
@@ -150,6 +156,7 @@ func runServe(args []string) error {
 	mux.HandleFunc("GET /dashboard/api/requests", proxy.handleDashboardRequests)
 	mux.HandleFunc("DELETE /dashboard/api/requests", proxy.handleDashboardRequests)
 	mux.HandleFunc("GET /dashboard/api/costs", proxy.handleDashboardCosts)
+	mux.HandleFunc("GET /dashboard/api/usage/by-user", proxy.handleUsageByUser)
 	mux.HandleFunc("GET /dashboard/api/usage", proxy.handleCodexUsage)
 	mux.HandleFunc("GET /usage", proxy.handleCodexUsage)
 	mux.HandleFunc("GET /healthz", proxy.handleHealth)
@@ -173,8 +180,10 @@ func runServe(args []string) error {
 	}
 	log.Printf("upstream responses endpoint %s", cfg.upstreamURL)
 	log.Printf("dashboard available at http://%s/dashboard", cfg.listen)
-	if strings.TrimSpace(cfg.apiKey) == "" {
+	if !keys.enabled() {
 		log.Printf("client API key disabled; bind to localhost or a private interface only")
+	} else if strings.TrimSpace(cfg.keysFile) != "" {
+		log.Printf("named client keys loaded from %s (%d entries; reloaded on change)", cfg.keysFile, len(keys.entries))
 	}
 	if cfg.maxConcurrent > 0 {
 		log.Printf("upstream concurrency capped at %d (queue wait cap %s)", cfg.maxConcurrent, defaultQueueWait)
@@ -228,6 +237,7 @@ func loadConfig(args []string) (config, error) {
 		authFile:             envOr("CODEX_AUTH_FILE", defaultAuthFile()),
 		apiKey:               firstNonEmptyEnv("CODEX_AUTH_BROKER_API_KEY", "OPENAI_API_KEY"),
 		apiKeyFile:           envOr("CODEX_AUTH_BROKER_API_KEY_FILE", ""),
+		keysFile:             envOr("CODEX_AUTH_BROKER_KEYS_FILE", ""),
 		promptCacheKey:       envOr("CODEX_AUTH_BROKER_PROMPT_CACHE_KEY", defaultPromptKey),
 		promptCacheRetention: envOr("CODEX_AUTH_BROKER_PROMPT_CACHE_RETENTION", ""),
 		upstreamURL:          envOr("CODEX_AUTH_BROKER_UPSTREAM_RESPONSES_URL", defaultUpstreamURL),
@@ -278,6 +288,7 @@ func loadConfig(args []string) (config, error) {
 	fs.StringVar(&authFilesValue, "auth-files", authFilesValue, "comma-separated Codex auth.json paths for multi-account failover (overrides --auth-file when set)")
 	fs.StringVar(&cfg.apiKey, "api-key", cfg.apiKey, "optional client-facing bearer key")
 	fs.StringVar(&cfg.apiKeyFile, "api-key-file", cfg.apiKeyFile, "optional file containing client-facing bearer key")
+	fs.StringVar(&cfg.keysFile, "keys-file", cfg.keysFile, "JSON file of named client keys [{name,key,role,disabled}]; reloaded on change")
 	fs.StringVar(&cfg.promptCacheKey, "prompt-cache-key", cfg.promptCacheKey, "prompt_cache_key to inject when absent; empty disables injection")
 	fs.StringVar(&cfg.promptCacheRetention, "prompt-cache-retention", cfg.promptCacheRetention, "record legacy cache-retention intent (in_memory or 24h); never forwarded upstream")
 	fs.StringVar(&cfg.upstreamURL, "upstream-responses-url", cfg.upstreamURL, "ChatGPT Codex Responses endpoint")
@@ -329,6 +340,11 @@ func loadConfig(args []string) (config, error) {
 		}
 		cfg.apiKey = secret
 	}
+	expandedKeys, err := expandPath(cfg.keysFile)
+	if err != nil {
+		return cfg, err
+	}
+	cfg.keysFile = expandedKeys
 	// An empty model list is intentional: /v1/models then proxies the live
 	// Codex model catalog instead of serving a static list.
 	cfg.models = splitCSV(modelsValue)
@@ -377,6 +393,7 @@ Common flags:
   --auth-files             Comma-separated auth.json paths for multi-account failover
   --api-key                Optional client-facing bearer key
   --api-key-file           Optional file containing client-facing bearer key
+  --keys-file              JSON file of named client keys (name/key/role/disabled); reloaded on change
   --prompt-cache-key       Inject prompt_cache_key when clients omit it
   --prompt-cache-retention Record legacy retention intent; never forward it upstream
   --request-log-limit      In-memory dashboard request history size
