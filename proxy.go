@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"crypto/subtle"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -35,6 +36,9 @@ type responsesProxy struct {
 	pool     *accountPool
 	requests *requestLogStore
 	client   *http.Client
+	// limiter is the global semaphore around upstream Codex calls. nil means
+	// unlimited; all its methods are nil-safe.
+	limiter *concurrencyLimiter
 }
 
 // dispatchFailure describes why the failover loop could not return a usable
@@ -78,6 +82,7 @@ func (p *responsesProxy) handleHealth(w http.ResponseWriter, _ *http.Request) {
 		"accounts":           accounts,
 		"accounts_total":     len(accounts),
 		"accounts_available": availableAccounts,
+		"concurrency":        p.limiter.stats(),
 	})
 }
 
@@ -224,6 +229,14 @@ func (p *responsesProxy) handleResponses(w http.ResponseWriter, r *http.Request)
 		writeProxyError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
+	release, limitFail := p.acquireUpstreamSlot(r.Context())
+	if limitFail != nil {
+		p.writeDispatchFailure(w, logEntry, limitFail)
+		return
+	}
+	// Held until the handler returns, so a streaming response occupies its slot
+	// for the full duration of the stream.
+	defer release()
 	resp, fail := p.dispatchUpstream(r.Context(), encoded, info, body, r)
 	if fail != nil {
 		p.writeDispatchFailure(w, logEntry, fail)
@@ -384,7 +397,10 @@ func (p *responsesProxy) authorizedClient(r *http.Request) bool {
 	if !strings.HasPrefix(header, prefix) {
 		return false
 	}
-	return strings.TrimSpace(strings.TrimPrefix(header, prefix)) == want
+	got := strings.TrimSpace(strings.TrimPrefix(header, prefix))
+	// Constant-time compare: this key is the only secret gating access to the
+	// Codex account, so it must not leak byte-by-byte through timing.
+	return subtle.ConstantTimeCompare([]byte(got), []byte(want)) == 1
 }
 
 func decodeRequestBody(r io.Reader, contentEncoding string) (map[string]any, error) {

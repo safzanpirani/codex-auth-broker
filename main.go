@@ -24,10 +24,11 @@ const (
 	// key the backend hashes the prefix unscoped, which is strictly better than
 	// a colliding one. Clients that send their own key, or a session id the
 	// broker can derive one from, are unaffected either way.
-	defaultPromptKey   = ""
-	defaultUpstreamURL = "https://chatgpt.com/backend-api/codex/responses"
-	defaultModelsURL   = "https://chatgpt.com/backend-api/codex/models"
-	defaultUsageURL    = "https://chatgpt.com/backend-api/wham/usage"
+	defaultPromptKey      = ""
+	defaultUpstreamURL    = "https://chatgpt.com/backend-api/codex/responses"
+	defaultModelsURL      = "https://chatgpt.com/backend-api/codex/models"
+	defaultUsageURL       = "https://chatgpt.com/backend-api/wham/usage"
+	defaultAlphaSearchURL = "https://chatgpt.com/backend-api/codex/alpha/search"
 	// defaultModelsClientVersion is sent as the required ?client_version= query
 	// param on the upstream codex/models endpoint. The upstream gates its model
 	// list on this value (older versions return an empty list), so we send a
@@ -39,6 +40,9 @@ const (
 	defaultUpstreamOriginator = "codex_cli_rs"
 	defaultInstructions       = "You are a helpful coding assistant."
 	defaultRequestLogLimit    = 1000
+	// defaultMaxConcurrent caps simultaneous upstream Codex calls (HTTP
+	// dispatches and WebSocket sessions). 0 disables the cap.
+	defaultMaxConcurrent = 8
 )
 
 var (
@@ -61,10 +65,12 @@ type config struct {
 	modelsClientVersion  string
 	upstreamOriginator   string
 	usageURL             string
+	alphaSearchURL       string
 	models               []string
 	timeout              time.Duration
 	requestLogLimit      int
 	requestLogFile       string
+	maxConcurrent        int
 }
 
 func main() {
@@ -135,6 +141,7 @@ func runServe(args []string) error {
 		client: &http.Client{
 			Timeout: cfg.timeout,
 		},
+		limiter: newConcurrencyLimiter(cfg.maxConcurrent, defaultQueueWait),
 	}
 
 	mux := http.NewServeMux()
@@ -152,6 +159,7 @@ func runServe(args []string) error {
 	mux.HandleFunc("GET /v1/codex/responses", proxy.handleResponsesWebSocket)
 	mux.HandleFunc("POST /v1/codex/responses", proxy.handleResponses)
 	mux.HandleFunc("POST /v1/chat/completions", proxy.handleChatCompletions)
+	mux.HandleFunc("POST /v1/alpha/search", proxy.handleAlphaSearch)
 
 	log.Printf("codex-auth-broker listening on %s", cfg.listen)
 	if len(cfg.authFiles) == 1 {
@@ -167,6 +175,11 @@ func runServe(args []string) error {
 	log.Printf("dashboard available at http://%s/dashboard", cfg.listen)
 	if strings.TrimSpace(cfg.apiKey) == "" {
 		log.Printf("client API key disabled; bind to localhost or a private interface only")
+	}
+	if cfg.maxConcurrent > 0 {
+		log.Printf("upstream concurrency capped at %d (queue wait cap %s)", cfg.maxConcurrent, defaultQueueWait)
+	} else {
+		log.Printf("upstream concurrency unlimited")
 	}
 	server := &http.Server{
 		Addr:              cfg.listen,
@@ -222,11 +235,13 @@ func loadConfig(args []string) (config, error) {
 		modelsClientVersion:  envOr("CODEX_AUTH_BROKER_MODELS_CLIENT_VERSION", defaultModelsClientVersion),
 		upstreamOriginator:   envOr("CODEX_AUTH_BROKER_UPSTREAM_ORIGINATOR", defaultUpstreamOriginator),
 		usageURL:             envOr("CODEX_AUTH_BROKER_USAGE_URL", defaultUsageURL),
+		alphaSearchURL:       envOr("CODEX_AUTH_BROKER_ALPHA_SEARCH_URL", defaultAlphaSearchURL),
 		refreshSkew:          defaultRefreshSkew,
 		models:               nil,
 		timeout:              defaultHTTPTimeout,
 		requestLogLimit:      defaultRequestLogLimit,
 		requestLogFile:       envOr("CODEX_AUTH_BROKER_REQUEST_LOG_FILE", defaultRequestLogFile()),
+		maxConcurrent:        defaultMaxConcurrent,
 	}
 	if value := strings.TrimSpace(os.Getenv("CODEX_AUTH_BROKER_REFRESH_SKEW")); value != "" {
 		parsed, err := time.ParseDuration(value)
@@ -245,6 +260,13 @@ func loadConfig(args []string) (config, error) {
 		}
 		cfg.requestLogLimit = parsed
 	}
+	if value := strings.TrimSpace(os.Getenv("CODEX_AUTH_BROKER_MAX_CONCURRENT")); value != "" {
+		parsed, err := strconv.Atoi(value)
+		if err != nil {
+			return cfg, fmt.Errorf("invalid CODEX_AUTH_BROKER_MAX_CONCURRENT: %w", err)
+		}
+		cfg.maxConcurrent = parsed
+	}
 
 	fs := flag.NewFlagSet("codex-auth-broker", flag.ContinueOnError)
 	skewValue := cfg.refreshSkew.String()
@@ -261,11 +283,13 @@ func loadConfig(args []string) (config, error) {
 	fs.StringVar(&cfg.upstreamURL, "upstream-responses-url", cfg.upstreamURL, "ChatGPT Codex Responses endpoint")
 	fs.StringVar(&cfg.modelsURL, "models-url", cfg.modelsURL, "ChatGPT Codex models endpoint proxied by /v1/models")
 	fs.StringVar(&cfg.usageURL, "usage-url", cfg.usageURL, "ChatGPT Codex usage endpoint")
+	fs.StringVar(&cfg.alphaSearchURL, "alpha-search-url", cfg.alphaSearchURL, "ChatGPT Codex standalone search endpoint")
 	fs.StringVar(&cfg.upstreamOriginator, "upstream-originator", cfg.upstreamOriginator, "originator header sent to Codex upstream; some models are gated to codex_cli_rs")
 	fs.StringVar(&modelsValue, "models", modelsValue, "comma-separated model ids to serve statically from /v1/models; empty proxies the live Codex model list")
 	fs.StringVar(&skewValue, "refresh-skew", skewValue, "refresh access token when it expires within this duration")
 	fs.StringVar(&timeoutValue, "timeout", timeoutValue, "upstream request timeout")
 	fs.IntVar(&cfg.requestLogLimit, "request-log-limit", cfg.requestLogLimit, "maximum in-memory dashboard request entries")
+	fs.IntVar(&cfg.maxConcurrent, "max-concurrent", cfg.maxConcurrent, "maximum simultaneous upstream Codex calls; excess requests queue up to 120s then get 429; 0 disables the cap")
 	fs.StringVar(&cfg.requestLogFile, "request-log-file", cfg.requestLogFile, "JSONL file for persistent request metadata; empty disables persistence")
 	fs.Usage = func() { usage(fs.Output()) }
 	if err := fs.Parse(args); err != nil {
@@ -324,6 +348,9 @@ func loadConfig(args []string) (config, error) {
 	if cfg.requestLogLimit < 0 {
 		return cfg, errors.New("request-log-limit must be zero or greater")
 	}
+	if cfg.maxConcurrent < 0 {
+		return cfg, errors.New("max-concurrent must be zero (unlimited) or greater")
+	}
 	return cfg, nil
 }
 
@@ -354,6 +381,7 @@ Common flags:
   --prompt-cache-retention Record legacy retention intent; never forward it upstream
   --request-log-limit      In-memory dashboard request history size
   --request-log-file       JSONL file for persistent request metadata; empty disables
+  --max-concurrent         Cap on simultaneous upstream Codex calls (default 8; 0 = unlimited)
 `)
 }
 

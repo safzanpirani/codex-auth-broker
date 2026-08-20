@@ -37,6 +37,14 @@ func (p *responsesProxy) handleResponsesWebSocket(w http.ResponseWriter, r *http
 		writeProxyError(w, http.StatusUpgradeRequired, "use a WebSocket Upgrade request or POST /v1/responses")
 		return
 	}
+	// A WebSocket session holds an upstream Codex connection for its whole
+	// lifetime, so it occupies one concurrency slot from handshake to close.
+	release, limitFail := p.acquireUpstreamSlot(r.Context())
+	if limitFail != nil {
+		p.writeDispatchFailure(w, nil, limitFail)
+		return
+	}
+	defer release()
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()

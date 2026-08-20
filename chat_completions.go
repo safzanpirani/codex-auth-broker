@@ -57,6 +57,14 @@ func (p *responsesProxy) handleChatCompletions(w http.ResponseWriter, r *http.Re
 		return
 	}
 
+	release, limitFail := p.acquireUpstreamSlot(r.Context())
+	if limitFail != nil {
+		p.writeDispatchFailure(w, logEntry, limitFail)
+		return
+	}
+	// Held until the handler returns, so a streaming response occupies its slot
+	// for the full duration of the stream.
+	defer release()
 	resp, fail := p.dispatchUpstream(r.Context(), encoded, info, body, r)
 	if fail != nil {
 		p.writeDispatchFailure(w, logEntry, fail)

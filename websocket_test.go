@@ -172,3 +172,39 @@ func writeWebSocketTestAuth(t *testing.T, accountID string) string {
 	}
 	return path
 }
+
+func TestResponsesWebSocketRejectsBadBearerKey(t *testing.T) {
+	proxy := &responsesProxy{
+		cfg:      config{apiKey: "client-key"},
+		pool:     &accountPool{},
+		requests: newRequestLogStore(10),
+	}
+	broker := httptest.NewServer(http.HandlerFunc(proxy.handleResponsesWebSocket))
+	defer broker.Close()
+
+	tests := []struct {
+		name   string
+		header string
+	}{
+		{name: "missing key", header: ""},
+		{name: "wrong key", header: "Bearer wrong-key"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			headers := http.Header{}
+			if tt.header != "" {
+				headers.Set("Authorization", tt.header)
+			}
+			conn, response, err := websocket.Dial(ctx, broker.URL+"/v1/responses", &websocket.DialOptions{HTTPHeader: headers})
+			if err == nil {
+				conn.CloseNow()
+				t.Fatal("websocket dial succeeded, want 401 rejection")
+			}
+			if response == nil || response.StatusCode != http.StatusUnauthorized {
+				t.Fatalf("handshake response = %#v, want 401", response)
+			}
+		})
+	}
+}

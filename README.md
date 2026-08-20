@@ -365,12 +365,30 @@ Flags and equivalent environment variables:
 | `--usage-url` | `CODEX_AUTH_BROKER_USAGE_URL` | ChatGPT wham usage endpoint |
 | `--models-url` | `CODEX_AUTH_BROKER_MODELS_URL` | ChatGPT Codex models endpoint |
 | n/a | `CODEX_AUTH_BROKER_MODELS_CLIENT_VERSION` | `2.0.0` (`client_version` sent to the Codex models endpoint) |
+| `--max-concurrent` | `CODEX_AUTH_BROKER_MAX_CONCURRENT` | `8`; cap on simultaneous upstream Codex calls, `0` = unlimited (see [Concurrency Cap](#concurrency-cap)) |
 | `--request-log-limit` | `CODEX_AUTH_BROKER_REQUEST_LOG_LIMIT` | `1000` |
 | `--request-log-file` | `CODEX_AUTH_BROKER_REQUEST_LOG_FILE` | `~/.codex-auth-broker/requests.jsonl` (empty disables) |
 | n/a | `CODEX_AUTH_BROKER_PRICING` | built-in per-model USD/1M-token table |
 | `--models` | `CODEX_AUTH_BROKER_MODELS` | empty; proxies the live Codex model list |
 | `--refresh-skew` | `CODEX_AUTH_BROKER_REFRESH_SKEW` | `10m` |
 | `--timeout` | none | `10m` |
+
+## Concurrency Cap
+
+The broker holds a global semaphore around upstream Codex calls: HTTP
+Responses and Chat Completions dispatches, and Responses WebSocket sessions.
+`--max-concurrent` / `CODEX_AUTH_BROKER_MAX_CONCURRENT` sets the cap
+(default `8`; `0` disables it).
+
+- A slot is held for the full duration of the upstream work — a streaming
+  response occupies its slot until the stream ends, and a WebSocket session
+  occupies one slot from handshake to close.
+- When every slot is busy, new requests queue for up to 120 seconds rather
+  than failing immediately. Queued requests respect client disconnects.
+- If the queue wait expires the broker returns `429` with a `Retry-After`
+  header and the standard error envelope.
+- `GET /healthz` reports the live state under `concurrency`:
+  `{"max_concurrent": 8, "in_flight": 2, "queued": 0}`.
 
 ## Multi-Account Failover
 
@@ -449,6 +467,13 @@ not receive access tokens, refresh tokens, or the auth file.
 If you bind to anything other than localhost, set `--api-key` or
 `--api-key-file` and use a private network.
 
+When a client key is configured, every `/v1/*` endpoint — including the
+`/v1/codex/responses` aliases and Responses WebSocket upgrades — and the
+dashboard API endpoints require `Authorization: Bearer <key>`; the presented
+key is checked with a constant-time compare. `/healthz` stays unauthenticated
+so process supervisors can probe it, and `/dashboard` serves only static HTML
+(the data behind it comes from the authenticated dashboard API).
+
 ## Limitations
 
 - Chat Completions currently supports one choice (`n: 1`), text/image/file
@@ -469,3 +494,12 @@ gofmt -w *.go
 go test ./...
 go build -o codex-auth-broker .
 ```
+
+### Standalone Search Passthrough
+
+`POST /v1/alpha/search` proxies the Codex standalone search backend (`web.run`
+without a GPT inference turn) at `https://chatgpt.com/backend-api/codex/alpha/search`,
+injecting the stored OAuth access token and account id. Gated by the same API key
+and concurrency semaphore as `/v1/responses`. Override the upstream with
+`--alpha-search-url` / `CODEX_AUTH_BROKER_ALPHA_SEARCH_URL`. One command action
+type per request; upstream Cloudflare 403s are passed through.

@@ -630,3 +630,89 @@ func TestInstructionsInjectedWhenNoPromptAtAll(t *testing.T) {
 		t.Fatalf("instructions = %#v, want the default placeholder", body["instructions"])
 	}
 }
+
+func TestAuthorizedClient(t *testing.T) {
+	tests := []struct {
+		name       string
+		configured string
+		header     string
+		want       bool
+	}{
+		{name: "no key configured allows missing header", configured: "", header: "", want: true},
+		{name: "no key configured allows any header", configured: "", header: "Bearer anything", want: true},
+		{name: "exact match accepted", configured: "secret-key", header: "Bearer secret-key", want: true},
+		{name: "surrounding whitespace trimmed", configured: "secret-key", header: "Bearer   secret-key", want: true},
+		{name: "missing header rejected", configured: "secret-key", header: "", want: false},
+		{name: "wrong token rejected", configured: "secret-key", header: "Bearer wrong", want: false},
+		{name: "prefix of key rejected", configured: "secret-key", header: "Bearer secret-ke", want: false},
+		{name: "key plus suffix rejected", configured: "secret-key", header: "Bearer secret-key2", want: false},
+		{name: "wrong scheme rejected", configured: "secret-key", header: "Basic secret-key", want: false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			proxy := &responsesProxy{cfg: config{apiKey: tt.configured}}
+			request := httptest.NewRequest(http.MethodGet, "/v1/models", nil)
+			if tt.header != "" {
+				request.Header.Set("Authorization", tt.header)
+			}
+			if got := proxy.authorizedClient(request); got != tt.want {
+				t.Fatalf("authorizedClient = %t, want %t", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestHandlersRequireBearerKey(t *testing.T) {
+	proxy := &responsesProxy{
+		cfg:      config{apiKey: "secret-key"},
+		pool:     &accountPool{},
+		requests: newRequestLogStore(10),
+	}
+	tests := []struct {
+		name    string
+		handler http.HandlerFunc
+		method  string
+		path    string
+		body    string
+	}{
+		{name: "responses", handler: proxy.handleResponses, method: http.MethodPost, path: "/v1/responses", body: `{"model":"gpt-5.5","input":"hi"}`},
+		{name: "chat completions", handler: proxy.handleChatCompletions, method: http.MethodPost, path: "/v1/chat/completions", body: `{"model":"gpt-5.5","messages":[{"role":"user","content":"hi"}]}`},
+		{name: "models", handler: proxy.handleModels, method: http.MethodGet, path: "/v1/models"},
+		{name: "responses websocket upgrade", handler: proxy.handleResponsesWebSocket, method: http.MethodGet, path: "/v1/responses"},
+		{name: "codex alias websocket upgrade", handler: proxy.handleResponsesWebSocket, method: http.MethodGet, path: "/v1/codex/responses"},
+		{name: "dashboard requests api", handler: proxy.handleDashboardRequests, method: http.MethodGet, path: "/dashboard/api/requests"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			for _, header := range []string{"", "Bearer wrong-key"} {
+				request := httptest.NewRequest(tt.method, tt.path, strings.NewReader(tt.body))
+				if header != "" {
+					request.Header.Set("Authorization", header)
+				}
+				recorder := httptest.NewRecorder()
+				tt.handler(recorder, request)
+				if recorder.Code != http.StatusUnauthorized {
+					t.Fatalf("header %q: status = %d, want 401", header, recorder.Code)
+				}
+				var parsed map[string]any
+				if err := json.Unmarshal(recorder.Body.Bytes(), &parsed); err != nil {
+					t.Fatalf("header %q: 401 body is not JSON: %v", header, err)
+				}
+				errBody, _ := parsed["error"].(map[string]any)
+				if errBody["message"] != "unauthorized" || errBody["type"] != "codex_auth_broker_error" {
+					t.Fatalf("header %q: error body = %#v", header, parsed)
+				}
+			}
+
+			// With the right key the request must clear auth: it may fail later
+			// (no upstream configured here) but never with 401.
+			request := httptest.NewRequest(tt.method, tt.path, strings.NewReader(tt.body))
+			request.Header.Set("Authorization", "Bearer secret-key")
+			recorder := httptest.NewRecorder()
+			tt.handler(recorder, request)
+			if recorder.Code == http.StatusUnauthorized {
+				t.Fatalf("valid key rejected with 401, body = %s", recorder.Body.String())
+			}
+		})
+	}
+}
