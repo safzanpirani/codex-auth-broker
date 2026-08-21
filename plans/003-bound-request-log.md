@@ -332,19 +332,19 @@ call sites. That is expected; proceed.
    `defaultRequestLogLimit = 1000`):
 
    ```go
-   	defaultRequestLogMaxBytes = 64 * 1024 * 1024
+   defaultRequestLogMaxBytes = 64 * 1024 * 1024
    ```
 
 2. Add the field to the `config` struct (after `requestLogFile string`):
 
    ```go
-   	requestLogMaxBytes int64
+   requestLogMaxBytes int64
    ```
 
 3. In `loadConfig`'s initial `cfg := config{...}` literal, set the default:
 
    ```go
-   		requestLogMaxBytes: defaultRequestLogMaxBytes,
+   requestLogMaxBytes: defaultRequestLogMaxBytes,
    ```
 
 4. Add env parsing alongside the existing
@@ -352,28 +352,28 @@ call sites. That is expected; proceed.
    `strconv.ParseInt(value, 10, 64)`):
 
    ```go
-   	if value := strings.TrimSpace(os.Getenv("CODEX_AUTH_BROKER_REQUEST_LOG_MAX_BYTES")); value != "" {
-   		parsed, err := strconv.ParseInt(value, 10, 64)
-   		if err != nil {
-   			return cfg, fmt.Errorf("invalid CODEX_AUTH_BROKER_REQUEST_LOG_MAX_BYTES: %w", err)
-   		}
-   		cfg.requestLogMaxBytes = parsed
-   	}
+   if value := strings.TrimSpace(os.Getenv("CODEX_AUTH_BROKER_REQUEST_LOG_MAX_BYTES")); value != "" {
+       parsed, err := strconv.ParseInt(value, 10, 64)
+       if err != nil {
+           return cfg, fmt.Errorf("invalid CODEX_AUTH_BROKER_REQUEST_LOG_MAX_BYTES: %w", err)
+       }
+       cfg.requestLogMaxBytes = parsed
+   }
    ```
 
 5. Register the flag next to `--request-log-file`:
 
    ```go
-   	fs.Int64Var(&cfg.requestLogMaxBytes, "request-log-max-bytes", cfg.requestLogMaxBytes, "max size of the persistent request log in bytes before oldest entries are dropped; 0 disables the cap")
+   fs.Int64Var(&cfg.requestLogMaxBytes, "request-log-max-bytes", cfg.requestLogMaxBytes, "max size of the persistent request log in bytes before oldest entries are dropped; 0 disables the cap")
    ```
 
 6. Add validation near the `requestLogLimit < 0` check at the end of
    `loadConfig`:
 
    ```go
-   	if cfg.requestLogMaxBytes < 0 {
-   		return cfg, errors.New("request-log-max-bytes must be zero or greater")
-   	}
+   if cfg.requestLogMaxBytes < 0 {
+       return cfg, errors.New("request-log-max-bytes must be zero or greater")
+   }
    ```
 
    (`errors` is already imported in `main.go`.)
@@ -381,7 +381,7 @@ call sites. That is expected; proceed.
 7. Update the `openRequestLogFile` call in `runServe` (`main.go:107`):
 
    ```go
-   		persist, err := openRequestLogFile(path, cfg.requestLogMaxBytes)
+   persist, err := openRequestLogFile(path, cfg.requestLogMaxBytes)
    ```
 
 **Verify**: `go build -o codex-auth-broker .` → still fails only on the two

@@ -46,3 +46,7 @@ Environment=CODEX_AUTH_BROKER_LISTEN=100.x.y.z:8317
 Keep `CODEX_AUTH_BROKER_API_KEY_FILE` enabled if binding to a private network
 interface.
 
+For a shared deployment, prefer `CODEX_AUTH_BROKER_KEYS_FILE` with named
+client/admin keys as documented in the README. Set
+`CODEX_AUTH_BROKER_MAX_CONCURRENT` to cap simultaneous upstream calls when
+multiple clients share the broker.

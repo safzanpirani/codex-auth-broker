@@ -171,7 +171,6 @@ func (p *responsesProxy) beginRequestLog(r *http.Request) *pendingRequestLog {
 		Method:    r.Method,
 		Path:      r.URL.Path,
 		Client:    clientAddress(r.RemoteAddr),
-		User:      sanitizeBrokerUser(r.Header.Get(brokerUserHeader)),
 		RequestID: requestIDFromHeaders(r),
 	}
 	// Attribute the entry to the named key that authenticated it. Resolution is
@@ -180,6 +179,7 @@ func (p *responsesProxy) beginRequestLog(r *http.Request) *pendingRequestLog {
 	// an empty client name.
 	if id, ok := p.authenticate(r); ok {
 		entry.ClientName = id.Name
+		entry.User = sanitizeBrokerUser(r.Header.Get(brokerUserHeader))
 	}
 	return &pendingRequestLog{
 		store:   p.requests,

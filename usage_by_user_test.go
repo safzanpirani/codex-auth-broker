@@ -70,6 +70,20 @@ func TestMarkRequestRecordsUser(t *testing.T) {
 	}
 }
 
+func TestBeginRequestLogRejectsUnauthenticatedUserAttribution(t *testing.T) {
+	proxy := &responsesProxy{
+		cfg:      config{apiKey: "valid-key"},
+		requests: newRequestLogStore(10),
+	}
+	request := httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
+	request.Header.Set(brokerUserHeader, "spoofed@example.com")
+
+	entry := proxy.beginRequestLog(request)
+	if entry.Entry.User != "" {
+		t.Fatalf("unauthenticated user = %q, want empty", entry.Entry.User)
+	}
+}
+
 func TestParseUsageWindow(t *testing.T) {
 	tests := []struct {
 		value    string

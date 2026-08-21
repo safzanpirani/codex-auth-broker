@@ -30,6 +30,7 @@ Codex account.
   - `POST /v1/responses`
   - `GET` / `POST /v1/codex/responses` (Pi Codex transport alias)
   - `POST /v1/chat/completions`
+  - `POST /v1/alpha/search`
 - Supports Responses-over-WebSocket, HTTP SSE streaming, and non-streaming
   Responses clients.
 - Translates Chat Completions messages, function tools, structured output,

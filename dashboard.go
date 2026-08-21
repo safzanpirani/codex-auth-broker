@@ -479,7 +479,7 @@ const dashboardHTML = `<!doctype html>
               <button class="chip" data-filter="streaming" type="button">Stream</button>
               <button class="chip" data-filter="cached" type="button">Cached</button>
             </div>
-            <input id="filter" type="search" placeholder="Filter model, id, error  ·  press /" aria-label="Filter requests">
+            <input id="filter" type="search" placeholder="Filter client, user, model, id, error  ·  press /" aria-label="Filter requests">
             <button class="button danger" id="clearHistory" type="button">Clear history</button>
           </div>
         </div>
@@ -754,7 +754,7 @@ const dashboardHTML = `<!doctype html>
           if (!text) return true;
           const blob = [
             req.status, req.model, req.normalized_model, req.reasoning_effort,
-            req.request_id, req.error, req.path, req.client
+            req.request_id, req.error, req.path, req.client, req.client_name, req.user
           ].join(" ").toLowerCase();
           return blob.includes(text);
         });
@@ -867,7 +867,7 @@ const dashboardHTML = `<!doctype html>
         const meta = {};
         ["id", "started_at", "method", "path", "status", "upstream_status", "model", "normalized_model",
          "reasoning_effort", "service_tier", "applied_service_tier", "stream", "duration_ms", "input_count", "tool_count",
-         "prompt_cache_key_set", "prompt_cache_key", "prompt_cache_retention_set", "prompt_cache_retention", "cache_write_tokens", "request_id", "client", "error"
+         "prompt_cache_key_set", "prompt_cache_key", "prompt_cache_retention_set", "prompt_cache_retention", "cache_write_tokens", "request_id", "client", "client_name", "user", "error"
         ].forEach((key) => { if (req[key] !== undefined && req[key] !== "" && req[key] !== null) meta[key] = req[key]; });
         lines.push("<pre>" + escapeHTML(JSON.stringify(meta, null, 2)) + "</pre>");
         return '<tr class="detail-row"><td colspan="10"><div class="detail-box">' + lines.join("") + '</div></td></tr>';
