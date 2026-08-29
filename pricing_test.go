@@ -120,6 +120,11 @@ func TestCostSummaryWindows(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(func() {
+		if err := persist.file.Close(); err != nil {
+			t.Errorf("close request log: %v", err)
+		}
+	})
 	store := newRequestLogStore(10)
 	store.persist = persist
 	old := requestLogEntry{StartedAt: now.Add(-48 * time.Hour).Format(time.RFC3339Nano), NormalizedModel: "gpt-5.5", CostUSD: &cost, InputTokens: int64Ptr(100)}
