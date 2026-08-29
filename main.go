@@ -197,6 +197,7 @@ func newServerMux(proxy *responsesProxy) *http.ServeMux {
 	mux.HandleFunc("GET /v1/responses", proxy.handleResponsesWebSocket)
 	mux.HandleFunc("POST /v1/responses", proxy.handleResponses)
 	mux.HandleFunc("POST /v1/images/generations", proxy.handleImageGenerations)
+	mux.HandleFunc("POST /v1/images/edits", proxy.handleImageEdits)
 	mux.HandleFunc("GET /v1/codex/responses", proxy.handleResponsesWebSocket)
 	mux.HandleFunc("POST /v1/codex/responses", proxy.handleResponses)
 	mux.HandleFunc("POST /v1/chat/completions", proxy.handleChatCompletions)

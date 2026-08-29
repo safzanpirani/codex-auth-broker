@@ -264,14 +264,14 @@ func (l *pendingRequestLog) markRequest(body map[string]any, info requestInfo, r
 	}
 }
 
-func (l *pendingRequestLog) markImageRequest(model string, count int) {
+func (l *pendingRequestLog) markImageRequest(model string, stream bool, inputCount int) {
 	if l == nil {
 		return
 	}
 	l.Entry.Model = model
 	l.Entry.NormalizedModel = model
-	l.Entry.Stream = false
-	l.Entry.InputCount = count
+	l.Entry.Stream = stream
+	l.Entry.InputCount = inputCount
 	l.Entry.ToolCount = 1
 }
 
