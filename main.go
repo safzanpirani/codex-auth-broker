@@ -150,23 +150,7 @@ func runServe(args []string) error {
 		keys:    keys,
 	}
 
-	mux := http.NewServeMux()
-	mux.HandleFunc("GET /", proxy.handleDashboard)
-	mux.HandleFunc("GET /dashboard", proxy.handleDashboard)
-	mux.HandleFunc("GET /dashboard/api/requests", proxy.handleDashboardRequests)
-	mux.HandleFunc("DELETE /dashboard/api/requests", proxy.handleDashboardRequests)
-	mux.HandleFunc("GET /dashboard/api/costs", proxy.handleDashboardCosts)
-	mux.HandleFunc("GET /dashboard/api/usage/by-user", proxy.handleUsageByUser)
-	mux.HandleFunc("GET /dashboard/api/usage", proxy.handleCodexUsage)
-	mux.HandleFunc("GET /usage", proxy.handleCodexUsage)
-	mux.HandleFunc("GET /healthz", proxy.handleHealth)
-	mux.HandleFunc("GET /v1/models", proxy.handleModels)
-	mux.HandleFunc("GET /v1/responses", proxy.handleResponsesWebSocket)
-	mux.HandleFunc("POST /v1/responses", proxy.handleResponses)
-	mux.HandleFunc("GET /v1/codex/responses", proxy.handleResponsesWebSocket)
-	mux.HandleFunc("POST /v1/codex/responses", proxy.handleResponses)
-	mux.HandleFunc("POST /v1/chat/completions", proxy.handleChatCompletions)
-	mux.HandleFunc("POST /v1/alpha/search", proxy.handleAlphaSearch)
+	mux := newServerMux(proxy)
 
 	log.Printf("codex-auth-broker listening on %s", cfg.listen)
 	if len(cfg.authFiles) == 1 {
@@ -196,6 +180,28 @@ func runServe(args []string) error {
 		ReadHeaderTimeout: 15 * time.Second,
 	}
 	return server.ListenAndServe()
+}
+
+func newServerMux(proxy *responsesProxy) *http.ServeMux {
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /", proxy.handleDashboard)
+	mux.HandleFunc("GET /dashboard", proxy.handleDashboard)
+	mux.HandleFunc("GET /dashboard/api/requests", proxy.handleDashboardRequests)
+	mux.HandleFunc("DELETE /dashboard/api/requests", proxy.handleDashboardRequests)
+	mux.HandleFunc("GET /dashboard/api/costs", proxy.handleDashboardCosts)
+	mux.HandleFunc("GET /dashboard/api/usage/by-user", proxy.handleUsageByUser)
+	mux.HandleFunc("GET /dashboard/api/usage", proxy.handleCodexUsage)
+	mux.HandleFunc("GET /usage", proxy.handleCodexUsage)
+	mux.HandleFunc("GET /healthz", proxy.handleHealth)
+	mux.HandleFunc("GET /v1/models", proxy.handleModels)
+	mux.HandleFunc("GET /v1/responses", proxy.handleResponsesWebSocket)
+	mux.HandleFunc("POST /v1/responses", proxy.handleResponses)
+	mux.HandleFunc("POST /v1/images/generations", proxy.handleImageGenerations)
+	mux.HandleFunc("GET /v1/codex/responses", proxy.handleResponsesWebSocket)
+	mux.HandleFunc("POST /v1/codex/responses", proxy.handleResponses)
+	mux.HandleFunc("POST /v1/chat/completions", proxy.handleChatCompletions)
+	mux.HandleFunc("POST /v1/alpha/search", proxy.handleAlphaSearch)
+	return mux
 }
 
 func runDoctor(args []string) error {

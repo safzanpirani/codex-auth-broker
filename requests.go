@@ -264,6 +264,17 @@ func (l *pendingRequestLog) markRequest(body map[string]any, info requestInfo, r
 	}
 }
 
+func (l *pendingRequestLog) markImageRequest(model string, count int) {
+	if l == nil {
+		return
+	}
+	l.Entry.Model = model
+	l.Entry.NormalizedModel = model
+	l.Entry.Stream = false
+	l.Entry.InputCount = count
+	l.Entry.ToolCount = 1
+}
+
 func (l *pendingRequestLog) markAppliedServiceTier(tier string) {
 	if l == nil {
 		return
