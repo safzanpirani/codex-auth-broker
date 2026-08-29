@@ -28,6 +28,7 @@ Codex account.
   - `GET /v1/models`
   - `GET /v1/responses` (Responses WebSocket upgrade)
   - `POST /v1/responses`
+  - `POST /v1/images/generations`
   - `GET` / `POST /v1/codex/responses` (Pi Codex transport alias)
   - `POST /v1/chat/completions`
   - `POST /v1/alpha/search`
@@ -143,6 +144,24 @@ For copy-paste examples covering model ids, reasoning levels, streaming, image
 input, and custom provider configuration, see
 [`docs/responses-api.md`](docs/responses-api.md).
 
+Image generation call:
+
+```bash
+curl -sS http://127.0.0.1:8317/v1/images/generations \
+  -H 'Content-Type: application/json' \
+  -H 'Authorization: Bearer dummy' \
+  -d '{
+    "model": "gpt-image-2",
+    "prompt": "A small yellow robot reading beside a window",
+    "size": "1024x1024",
+    "quality": "high"
+  }'
+```
+
+The response contains base64 image data. See
+[`docs/images-api.md`](docs/images-api.md) for supported options, response
+shape, limits, and security guidance.
+
 Chat Completions call:
 
 ```bash
@@ -248,7 +267,8 @@ It shows:
 
 - Live Codex usage from `https://chatgpt.com/backend-api/wham/usage`.
 - Primary and secondary usage windows, including reset countdowns.
-- Redacted request history for `/v1/models`, `/v1/responses`, and
+- Redacted request history for `/v1/models`, `/v1/responses`,
+  `/v1/images/generations`, and
   `/v1/chat/completions` calls.
 - Status, model normalization, reasoning effort, streaming mode, duration,
   cached tokens, and total tokens. Streaming calls are scanned as they pass
