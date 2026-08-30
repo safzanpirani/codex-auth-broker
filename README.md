@@ -38,6 +38,9 @@ Codex account.
 - Translates Chat Completions messages, function tools, structured output,
   final responses, and streaming chunks over the same Responses backend.
 - Normalizes Factory model names like `gpt-5.5(medium)`.
+- Normalizes Fast mode (`service_tier: "fast"` or `"priority"`) to the
+  ChatGPT Codex wire signal while preserving the tier the backend actually
+  reports in Responses and Chat Completions output.
 - Preserves or injects `prompt_cache_key` for model-side prompt caching.
 - Strips OpenAI SDK compatibility fields that the Codex backend rejects.
 - Shows a local redacted dashboard with request history and live Codex usage.
@@ -289,16 +292,21 @@ It shows:
   per token. Override prices with `CODEX_AUTH_BROKER_PRICING`, for example
   `{"gpt-5.5":{"input":5,"cached_input":0.5,"cache_write":5,"output":30}}`
   (USD per 1M tokens). GPT-5.6 defaults price reported cache writes at 1.25x
-  uncached input, matching the public API-equivalent rate.
+  uncached input, matching the public API-equivalent rate. GPT-5.6, GPT-5.5,
+  and GPT-5.4 requests above 272,000 input tokens apply the published premium
+  to the full request: 2x input and 1.5x output. Unit-rate overrides retain
+  this model policy.
 - Filtering, pause/resume, manual refresh, and clear-history controls.
 
 The in-memory request log is bounded by `--request-log-limit`. Request
 metadata is also appended as JSONL to `--request-log-file`
 (default `~/.codex-auth-broker/requests.jsonl`, mode 0600; pass an empty value
 to disable). On startup the broker reloads the tail of that file so dashboard
-history survives restarts; the clear-history button only clears memory.
+history survives restarts. The clear-history button clears both memory and the
+persistent JSONL file.
 Neither store ever contains prompt bodies, completion text, bearer tokens,
-access tokens, or refresh tokens.
+access tokens, refresh tokens, or raw prompt cache keys. The stores retain a
+short SHA-256 cache-key fingerprint for correlation.
 
 Dashboard endpoints:
 
@@ -345,6 +353,9 @@ named bearer keys, so each consumer gets its own rotatable credential:
   { "name": "old-shared",     "key": "<random>", "role": "client", "disabled": true }
 ]
 ```
+
+Set the file mode to `0600`. The broker rejects key files that grant access to
+the group or other users.
 
 - `role` is `"admin"` (full access including `/dashboard*`) or `"client"`
   (`/v1/*` only); it defaults to `client` when omitted. Names must be unique.
@@ -437,11 +448,11 @@ chmod 600 ~/.codex-auth-broker/client.key
 Install the user service:
 
 ```bash
-mkdir -p ~/.config/systemd/user
-cp packaging/systemd/codex-auth-broker.service ~/.config/systemd/user/
-systemctl --user daemon-reload
-systemctl --user enable --now codex-auth-broker.service
+./scripts/install-systemd-user.sh
 ```
+
+Set `BIN=/path/to/codex-auth-broker` before the command when the binary does
+not live at `/usr/local/bin/codex-auth-broker`.
 
 More detail: `docs/linux-systemd.md`.
 
@@ -534,8 +545,8 @@ the socket is established is forwarded to the client, the account is cooled,
 and the socket is closed so a reconnect can select the next account; an
 in-flight turn is never replayed automatically across accounts.
 
-**Observability.** `/healthz` lists each account with its availability and
-cooldown; `doctor --auth-files ...` validates every login; and each rotation
+**Observability.** `/healthz` reports aggregate account availability;
+`doctor --auth-files ...` validates every login; and each rotation
 logs a line like:
 
 ```text

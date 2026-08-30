@@ -102,7 +102,10 @@ func (p *responsesProxy) handleDashboardRequests(w http.ResponseWriter, r *http.
 		limit := requestLimitFromQuery(r, 250)
 		writeJSON(w, http.StatusOK, p.requests.snapshot(limit))
 	case http.MethodDelete:
-		p.requests.clear()
+		if err := p.requests.clear(); err != nil {
+			writeProxyError(w, http.StatusInternalServerError, "clear request history failed")
+			return
+		}
 		writeJSON(w, http.StatusOK, map[string]any{
 			"status":       "cleared",
 			"generated_at": time.Now().UTC().Format(time.RFC3339Nano),
@@ -133,7 +136,6 @@ func (p *responsesProxy) fetchCodexUsage(ctx context.Context) (map[string]any, i
 	if err != nil {
 		return nil, http.StatusBadGateway, fmt.Errorf("Codex auth failed: %w", err)
 	}
-	acct.noteAccountID(access.AccountID)
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, p.cfg.usageURL, nil)
 	if err != nil {
 		return nil, http.StatusBadGateway, fmt.Errorf("build usage request failed: %w", err)
@@ -880,7 +882,7 @@ const dashboardHTML = `<!doctype html>
         const keyVal = req.prompt_cache_key ? String(req.prompt_cache_key) : '';
         const keyShort = keyVal ? (keyVal.length > 8 ? '…' + keyVal.slice(-6) : keyVal) : '';
         const keyFlag = req.prompt_cache_key_set
-          ? '<span class="badge cache" title="prompt_cache_key' + (keyVal ? ' = ' + escapeHTML(keyVal) : '') + ' — a value that stays stable across a conversation lets the backend reuse its automatic prefix cache; rotating per-request ids are never injected as the key">key' + (keyShort ? ' ' + escapeHTML(keyShort) : '') + '</span>'
+          ? '<span class="badge cache" title="prompt_cache_key is set' + (keyVal ? '; stored fingerprint = ' + escapeHTML(keyVal) : '') + ' — a stable value lets the backend reuse its automatic prefix cache; rotating per-request ids are never injected as the key">key' + (keyShort ? ' ' + escapeHTML(keyShort) : '') + '</span>'
           : '';
         const ttlFlag = req.prompt_cache_retention
           ? '<span class="badge cache" title="prompt_cache_retention requested by client — stripped before forwarding to Codex">ttl ' + escapeHTML(req.prompt_cache_retention) + '</span>'

@@ -110,7 +110,6 @@ func (p *responsesProxy) dialResponsesWebSocket(ctx context.Context, r *http.Req
 			lastErr = err
 			continue
 		}
-		acct.noteAccountID(access.AccountID)
 		headers := p.responsesWebSocketHeaders(r, access)
 		conn, response, err := websocket.Dial(ctx, p.cfg.upstreamURL, &websocket.DialOptions{
 			HTTPClient:      webSocketHTTPClient(p.client),
@@ -161,6 +160,9 @@ func (p *responsesProxy) responsesWebSocketHeaders(r *http.Request, access acces
 		if values := r.Header.Values(key); len(values) > 0 {
 			headers[http.CanonicalHeaderKey(key)] = append([]string(nil), values...)
 		}
+	}
+	if routingHint := normalizeCodexRoutingHint(r.Header.Get(codexRoutingHintHeader)); routingHint != "" {
+		headers.Set(codexRoutingHintHeader, routingHint)
 	}
 	headers.Set("OpenAI-Beta", mergeHeaderToken(r.Header.Get("OpenAI-Beta"), responsesWebSocketBeta))
 	return headers
@@ -279,35 +281,39 @@ func (t *webSocketTurnTracker) observeServerEvent(payload []byte) bool {
 	}
 	if response, ok := event["response"].(map[string]any); ok {
 		t.pending.markUsage(extractTokenUsage(response))
+		recordAppliedServiceTier(t.pending, t.pending.Entry.ServiceTier, extractServiceTier(response))
 	}
 	if kind == "response.failed" || kind == "error" {
-		t.pending.Entry.Error = webSocketEventError(event)
+		status := http.StatusBadGateway
+		if webSocketEventStatus(event) == http.StatusTooManyRequests {
+			status = http.StatusTooManyRequests
+		}
+		t.pending.markError(status, webSocketEventLogError(event, status))
 	}
 	t.pending.finish()
 	t.pending = nil
 	return rateLimited
 }
 
-func (t *webSocketTurnTracker) finishOpen(err error) {
+func (t *webSocketTurnTracker) finishOpen(_ error) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	if t.pending == nil {
 		return
 	}
-	if status := websocket.CloseStatus(err); status != websocket.StatusNormalClosure && status != websocket.StatusGoingAway {
-		t.pending.markError(http.StatusBadGateway, "WebSocket closed before response completion")
-	}
+	t.pending.markError(http.StatusBadGateway, "WebSocket closed before response completion")
 	t.pending.finish()
 	t.pending = nil
 }
 
-func webSocketEventError(event map[string]any) string {
-	if errBody, ok := event["error"].(map[string]any); ok {
-		if message := stringField(errBody, "message"); message != "" {
-			return message
+func webSocketEventLogError(event map[string]any, status int) string {
+	summary := fmt.Sprintf("upstream WebSocket error status=%d", status)
+	if errorBody, ok := event["error"].(map[string]any); ok {
+		if attributes := safeErrorAttributes(errorBody); attributes != "" {
+			summary += " (" + attributes + ")"
 		}
 	}
-	return stringField(event, "type")
+	return summary
 }
 
 func webSocketEventStatus(event map[string]any) int {
@@ -337,8 +343,9 @@ func webSocketHTTPClient(client *http.Client) *http.Client {
 	if client == nil {
 		return &http.Client{}
 	}
+	// coder/websocket converts Timeout into a handshake context deadline and
+	// clears it on its own client clone after the upgrade succeeds.
 	clone := *client
-	clone.Timeout = 0
 	return &clone
 }
 

@@ -250,6 +250,46 @@ catalog advertises it. In the official Codex CLI, ultra maps to `max` on the
 wire and additionally enables proactive multi-agent task delegation — a
 client-side behavior the broker does not replicate.
 
+## Fast Mode And Service Tiers
+
+Send either accepted Fast mode spelling:
+
+```json
+{
+  "model": "gpt-5.5",
+  "input": "Keep this short.",
+  "service_tier": "fast"
+}
+```
+
+`fast` and `priority` are aliases. The broker canonicalizes both to the signal
+used by the current official Codex client: `service_tier: "priority"` in the
+request body plus `x-codex-routing-hint: model=<model>;tier=priority` on HTTP
+requests. `serviceTier` is accepted as a camel-case input alias. `flex` and
+`ultrafast` retain their own wire values.
+
+Explicit `auto` and `default` are omitted on the ChatGPT Codex wire. This
+matches the official client and avoids the backend rejection seen with
+explicit `auto`; omit `service_tier` for normal Standard routing.
+
+The response's `service_tier` is always the value the upstream backend reports
+it actually used. The broker does not replace `default` with the requested
+Fast tier. ChatGPT Fast mode depends on model/account/backend eligibility, and
+the backend can decline a correctly transmitted `priority` request. The
+dashboard keeps requested and applied tiers in separate fields.
+
+For Responses WebSocket, the routing hint belongs to the opening handshake,
+which happens before the first `response.create` event. The broker normalizes
+the event body and safely forwards a client handshake hint such as:
+
+```text
+x-codex-routing-hint: model=gpt-5.5;tier=priority
+```
+
+Official Codex WebSocket clients send that header. A generic WebSocket client
+that only puts `service_tier` in `response.create` still sends the canonical
+body field, but cannot retroactively add the connection-level routing hint.
+
 ## Streaming
 
 Set `stream: true` and keep the curl connection open:

@@ -58,7 +58,6 @@ func (p *responsesProxy) handleAlphaSearch(w http.ResponseWriter, r *http.Reques
 		writeProxyError(w, http.StatusBadGateway, "Codex auth failed: "+err.Error())
 		return
 	}
-	acct.noteAccountID(access.AccountID)
 
 	req, err := http.NewRequestWithContext(r.Context(), http.MethodPost, p.cfg.alphaSearchURL, bytes.NewReader(payload))
 	if err != nil {

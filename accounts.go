@@ -31,14 +31,11 @@ var errAllCoolingDown = errors.New("all Codex accounts are cooling down")
 // account wraps a single Codex credential (one auth.json) with its own refresh
 // state plus a cooldown deadline set when that account hits a rate-limit window.
 type account struct {
-	index int
 	label string
 	mgr   *authManager
 
 	mu            sync.Mutex
 	cooldownUntil time.Time
-	lastReason    string
-	lastAccountID string
 }
 
 func (a *account) available(now time.Time) bool {
@@ -47,45 +44,12 @@ func (a *account) available(now time.Time) bool {
 	return !a.cooldownUntil.After(now)
 }
 
-func (a *account) cool(until time.Time, reason string) {
+func (a *account) cool(until time.Time, _ string) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	if until.After(a.cooldownUntil) {
 		a.cooldownUntil = until
 	}
-	a.lastReason = reason
-}
-
-func (a *account) noteAccountID(id string) {
-	if id == "" {
-		return
-	}
-	a.mu.Lock()
-	a.lastAccountID = id
-	a.mu.Unlock()
-}
-
-func (a *account) snapshot(now time.Time) map[string]any {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	out := map[string]any{
-		"index":     a.index,
-		"label":     a.label,
-		"available": !a.cooldownUntil.After(now),
-	}
-	if !a.cooldownUntil.IsZero() {
-		out["cooldown_until"] = a.cooldownUntil.UTC().Format(time.RFC3339)
-		if secs := int(time.Until(a.cooldownUntil).Seconds()); secs > 0 {
-			out["cooldown_seconds"] = secs
-		}
-	}
-	if a.lastReason != "" {
-		out["last_reason"] = a.lastReason
-	}
-	if a.lastAccountID != "" {
-		out["account_id"] = a.lastAccountID
-	}
-	return out
 }
 
 // accountPool holds the ordered set of Codex accounts. Selection is sticky:
@@ -100,9 +64,8 @@ type accountPool struct {
 func newAccountPool(files []string, refreshSkew time.Duration, client *http.Client) *accountPool {
 	pool := &accountPool{}
 	used := map[string]bool{}
-	for i, f := range files {
+	for _, f := range files {
 		pool.accounts = append(pool.accounts, &account{
-			index: i,
 			label: accountLabel(f, used),
 			mgr:   &authManager{authFile: f, refreshSkew: refreshSkew, client: client},
 		})
@@ -165,14 +128,16 @@ func (p *accountPool) soonestReset(now time.Time) time.Time {
 	return soonest
 }
 
-func (p *accountPool) statuses(now time.Time) []map[string]any {
+func (p *accountPool) availability(now time.Time) (total, available int) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	out := make([]map[string]any, 0, len(p.accounts))
+	total = len(p.accounts)
 	for _, a := range p.accounts {
-		out = append(out, a.snapshot(now))
+		if a.available(now) {
+			available++
+		}
 	}
-	return out
+	return total, available
 }
 
 // accountLabel derives a short, secret-free log label for an auth file. Since

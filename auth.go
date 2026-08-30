@@ -16,6 +16,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -28,6 +29,7 @@ type authManager struct {
 	authFile    string
 	refreshSkew time.Duration
 	client      *http.Client
+	mu          sync.Mutex
 }
 
 type accessMaterial struct {
@@ -58,6 +60,11 @@ type tokenResponse struct {
 }
 
 func (m *authManager) current(ctx context.Context) (accessMaterial, error) {
+	// The file lock coordinates broker processes on platforms that support it.
+	// The mutex also serializes refreshes inside this process on every platform.
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
 	unlock, err := lockFile(m.authFile + ".lock")
 	if err != nil {
 		return accessMaterial{}, err

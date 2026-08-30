@@ -1,7 +1,10 @@
 #!/usr/bin/env bash
 set -euo pipefail
+umask 077
 
 BIN="${BIN:-/usr/local/bin/codex-auth-broker}"
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+UNIT_SOURCE="$SCRIPT_DIR/../packaging/systemd/codex-auth-broker.service"
 SERVICE_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user"
 STATE_DIR="$HOME/.codex-auth-broker"
 UNIT="$SERVICE_DIR/codex-auth-broker.service"
@@ -24,11 +27,15 @@ if [[ ! -f "$STATE_DIR/client.key" ]]; then
     dd if=/dev/urandom bs=32 count=1 2>/dev/null | od -An -tx1 | tr -d ' \n' > "$STATE_DIR/client.key"
     printf '\n' >> "$STATE_DIR/client.key"
   fi
-  chmod 600 "$STATE_DIR/client.key"
 fi
+chmod 600 "$STATE_DIR/client.key"
 
-cp packaging/systemd/codex-auth-broker.service "$UNIT"
+escaped_bin="${BIN//\\/\\\\}"
+escaped_bin="${escaped_bin//\"/\\\"}"
+escaped_bin="${escaped_bin//%/%%}"
+escaped_bin="${escaped_bin//&/\\&}"
+escaped_bin="${escaped_bin//|/\\|}"
+sed "s|^ExecStart=.*|ExecStart=\"$escaped_bin\" serve|" "$UNIT_SOURCE" > "$UNIT"
 systemctl --user daemon-reload
 systemctl --user enable --now codex-auth-broker.service
 systemctl --user status codex-auth-broker.service --no-pager
-

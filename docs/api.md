@@ -83,10 +83,13 @@ Example entry:
   "model": "gpt-5.5(medium)",
   "normalized_model": "gpt-5.5",
   "reasoning_effort": "medium",
+  "service_tier": "priority",
+  "applied_service_tier": "default",
   "stream": false,
   "status": 200,
   "upstream_status": 200,
   "prompt_cache_key_set": true,
+  "prompt_cache_key": "sha256:9ec8d7df5522",
   "prompt_cache_retention_set": false,
   "input_count": 1,
   "tool_count": 4,
@@ -97,7 +100,8 @@ Example entry:
 }
 ```
 
-The request log deliberately does not store prompt text, completion text,
+The request log stores a short SHA-256 fingerprint instead of the raw prompt
+cache key. It deliberately does not store prompt text, completion text,
 request bodies, access tokens, refresh tokens, or bearer keys. Set
 `--request-log-limit 0` to disable it.
 
@@ -107,8 +111,9 @@ client disconnects early or the upstream stream does not include usage, token
 fields are omitted for that row.
 
 Responses WebSocket turns are recorded the same way with `method: "WS"`. The
-broker inspects only `response.create` metadata and final usage/error events;
-prompt text, completion text, full frames, and bearer tokens are not retained.
+broker inspects only `response.create` metadata and final usage/tier/error
+events; prompt text, completion text, full frames, and bearer tokens are not
+retained.
 
 ## `DELETE /dashboard/api/requests`
 
@@ -139,6 +144,9 @@ Compatibility normalizations:
   `model: "gpt-5.3-codex"`.
 - Native client reasoning, such as Pi sending `reasoning.effort`, is preserved
   and shown in dashboard request history.
+- `service_tier: "fast"` and `"priority"` both become the official Codex Fast
+  mode wire value `"priority"` and the matching `x-codex-routing-hint` header.
+  Explicit `auto` and `default` are omitted for the ChatGPT Codex backend.
 - String `input` becomes a Responses input item list.
 - Missing `instructions` gets a compact default.
 - Missing `store` becomes `false`.
@@ -168,6 +176,12 @@ The broker also adds that beta token when it is absent. It accepts JSON
 `response.create` client events and forwards Responses server events. Every
 `response.create` receives the same model-name, reasoning, input, default, and
 unsupported-field normalization as `POST /v1/responses`.
+
+The official Codex client also sends a connection-level
+`x-codex-routing-hint` during the opening handshake. The broker validates and
+normalizes that client header before forwarding it. Because the handshake
+precedes the first `response.create`, a service tier supplied only inside the
+event cannot add the connection-level hint retroactively.
 
 The following Codex protocol headers are passed through the opening handshake:
 

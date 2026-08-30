@@ -4,10 +4,12 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/klauspost/compress/zstd"
 )
@@ -33,6 +35,25 @@ func TestDecodeRequestBodyZstd(t *testing.T) {
 		t.Fatalf("decode Pi zstd request: %v", err)
 	}
 	if body["model"] != "gpt-5.6-sol" || body["input"] != "hello" {
+		t.Fatalf("decoded body = %#v", body)
+	}
+}
+
+func TestDecodeRequestBodyRejectsTrailingData(t *testing.T) {
+	for _, input := range []string{
+		`{"model":"gpt-5.5"} {"input":"second value"}`,
+		`{"model":"gpt-5.5"} trailing garbage`,
+	} {
+		if _, err := decodeRequestBody(strings.NewReader(input), ""); err == nil {
+			t.Fatalf("decodeRequestBody(%q) succeeded, want trailing-data error", input)
+		}
+	}
+
+	body, err := decodeRequestBody(strings.NewReader("{\"model\":\"gpt-5.5\"}\n\t "), "")
+	if err != nil {
+		t.Fatalf("decodeRequestBody with trailing whitespace: %v", err)
+	}
+	if body["model"] != "gpt-5.5" {
 		t.Fatalf("decoded body = %#v", body)
 	}
 }
@@ -104,8 +125,8 @@ func TestNormalizeResponsesBodyFactoryDefaults(t *testing.T) {
 			t.Fatalf("%s should be stripped", key)
 		}
 	}
-	if body["service_tier"] != "auto" {
-		t.Fatalf("service_tier = %#v, want auto", body["service_tier"])
+	if _, ok := body["service_tier"]; ok {
+		t.Fatalf("service_tier = %#v, want explicit auto omitted for Codex upstream", body["service_tier"])
 	}
 	input := body["input"].([]any)
 	first := input[0].(map[string]any)
@@ -159,6 +180,108 @@ func TestNormalizeResponsesBodyServiceTier(t *testing.T) {
 	}
 	if _, ok := body["service_tier"]; ok {
 		t.Fatal("invalid service_tier should be stripped")
+	}
+}
+
+func TestHandleResponsesServiceTierTransport(t *testing.T) {
+	tests := []struct {
+		name          string
+		requestField  string
+		requestTier   string
+		wantRequested string
+		wantWireTier  string
+	}{
+		{name: "priority", requestField: "service_tier", requestTier: "priority", wantRequested: "priority", wantWireTier: "priority"},
+		{name: "fast alias", requestField: "service_tier", requestTier: "fast", wantRequested: "priority", wantWireTier: "priority"},
+		{name: "camel fast alias", requestField: "serviceTier", requestTier: "fast", wantRequested: "priority", wantWireTier: "priority"},
+		{name: "flex", requestField: "service_tier", requestTier: "flex", wantRequested: "flex", wantWireTier: "flex"},
+		{name: "auto", requestField: "service_tier", requestTier: "auto", wantRequested: "auto"},
+		{name: "default", requestField: "service_tier", requestTier: "default", wantRequested: "default"},
+		{name: "omitted"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			upstreamRequest := make(chan struct {
+				body        map[string]any
+				routingHint string
+			}, 1)
+			upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				var body map[string]any
+				if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+					t.Errorf("decode upstream request: %v", err)
+					w.WriteHeader(http.StatusBadRequest)
+					return
+				}
+				upstreamRequest <- struct {
+					body        map[string]any
+					routingHint string
+				}{body: body, routingHint: r.Header.Get(codexRoutingHintHeader)}
+				w.Header().Set("Content-Type", "text/event-stream")
+				_, _ = io.WriteString(w, "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_tier\",\"model\":\"gpt-5.5\",\"status\":\"completed\",\"service_tier\":\"default\",\"output\":[]}}\n\n")
+			}))
+			defer upstream.Close()
+
+			authFile := writeWebSocketTestAuth(t, "acct_responses_tier")
+			store := newRequestLogStore(10)
+			proxy := &responsesProxy{
+				cfg: config{
+					apiKey:              "client-key",
+					upstreamURL:         upstream.URL,
+					upstreamOriginator:  "codex_cli_rs",
+					modelsClientVersion: "2.0.0",
+				},
+				pool:     newAccountPool([]string{authFile}, time.Minute, upstream.Client()),
+				requests: store,
+				client:   upstream.Client(),
+			}
+
+			requestBody := map[string]any{"model": "gpt-5.5", "input": "hello", "stream": false}
+			if tt.requestField != "" {
+				requestBody[tt.requestField] = tt.requestTier
+			}
+			encoded, err := json.Marshal(requestBody)
+			if err != nil {
+				t.Fatal(err)
+			}
+			request := httptest.NewRequest(http.MethodPost, "/v1/responses", bytes.NewReader(encoded))
+			request.Header.Set("Authorization", "Bearer client-key")
+			request.Header.Set("Content-Type", "application/json")
+			recorder := httptest.NewRecorder()
+			proxy.handleResponses(recorder, request)
+
+			if recorder.Code != http.StatusOK {
+				t.Fatalf("status = %d, body = %s", recorder.Code, recorder.Body.String())
+			}
+			var response map[string]any
+			if err := json.Unmarshal(recorder.Body.Bytes(), &response); err != nil {
+				t.Fatal(err)
+			}
+			if got := extractServiceTier(response); got != "default" {
+				t.Fatalf("downstream service_tier = %q, want upstream-applied default", got)
+			}
+
+			got := <-upstreamRequest
+			wireTier := stringField(got.body, "service_tier")
+			if wireTier != tt.wantWireTier {
+				t.Fatalf("upstream service_tier = %q, want %q; body = %#v", wireTier, tt.wantWireTier, got.body)
+			}
+			wantHint := "model=gpt-5.5"
+			if tt.wantWireTier != "" {
+				wantHint += ";tier=" + tt.wantWireTier
+			}
+			if got.routingHint != wantHint {
+				t.Fatalf("%s = %q, want %q", codexRoutingHintHeader, got.routingHint, wantHint)
+			}
+
+			snapshot := store.snapshot(10)
+			if len(snapshot.RequestLog) != 1 {
+				t.Fatalf("request log length = %d, want 1", len(snapshot.RequestLog))
+			}
+			entry := snapshot.RequestLog[0]
+			if entry.ServiceTier != tt.wantRequested || entry.AppliedServiceTier != "default" {
+				t.Fatalf("service tiers = requested %q applied %q, want requested %q applied default", entry.ServiceTier, entry.AppliedServiceTier, tt.wantRequested)
+			}
+		})
 	}
 }
 

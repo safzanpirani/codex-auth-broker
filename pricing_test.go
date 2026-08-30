@@ -2,7 +2,6 @@ package main
 
 import (
 	"math"
-	"os"
 	"path/filepath"
 	"testing"
 	"time"
@@ -52,23 +51,37 @@ func TestEstimateCostUSDPricesGPT56CacheWrites(t *testing.T) {
 		t.Fatal("expected cost for gpt-5.6-sol")
 	}
 	// 40k normal input + 40k cache reads + 20k cache writes + 10k output.
-	want := (40_000*5.00 + 40_000*0.50 + 20_000*6.25 + 10_000*30.00) / 1e6
+	want := (40_000*4.00 + 40_000*0.40 + 20_000*5.00 + 10_000*20.00) / 1e6
 	if math.Abs(*cost-want) > 1e-9 {
 		t.Fatalf("cost = %v, want %v", *cost, want)
 	}
 }
 
-func TestLookupModelPricingPrefersLongestPrefix(t *testing.T) {
+func TestLookupModelPricingMatchesExactModel(t *testing.T) {
 	pricing, ok := lookupModelPricing(defaultModelPricing, "gpt-5.4-mini")
 	if !ok || pricing.InputPerM != 0.75 {
 		t.Fatalf("expected gpt-5.4-mini pricing, got %+v ok=%t", pricing, ok)
 	}
 }
 
+func TestLookupModelPricingAcceptsOnlyDatedSnapshots(t *testing.T) {
+	for _, model := range []string{"gpt-5.4-2026-03-05", "gpt-5.4-mini-2026-01-15", "gpt-5.5-2026-04-23"} {
+		if _, ok := lookupModelPricing(defaultModelPricing, model); !ok {
+			t.Fatalf("expected pricing for dated snapshot %s", model)
+		}
+	}
+	for _, model := range []string{"gpt-5.4-pro", "gpt-5.4-nano", "gpt-5.5-pro", "gpt-5.50", "gpt-5.4-2026-13-40"} {
+		if pricing, ok := lookupModelPricing(defaultModelPricing, model); ok {
+			t.Fatalf("unexpected prefix pricing for %s: %+v", model, pricing)
+		}
+	}
+}
+
 func TestLookupModelPricingGPT56(t *testing.T) {
 	cases := map[string]float64{
-		"gpt-5.6-sol":   5.00,
-		"gpt-5.6-terra": 2.50,
+		"gpt-5.6":       4.00,
+		"gpt-5.6-sol":   4.00,
+		"gpt-5.6-terra": 2.00,
 		"gpt-5.6-luna":  0.20,
 	}
 	for model, wantInput := range cases {
@@ -76,6 +89,34 @@ func TestLookupModelPricingGPT56(t *testing.T) {
 		if !ok || pricing.InputPerM != wantInput {
 			t.Fatalf("%s: got %+v ok=%t, want InputPerM=%v", model, pricing, ok, wantInput)
 		}
+	}
+}
+
+func TestEstimateCostUSDLongContextPremium(t *testing.T) {
+	baseUsage := tokenUsage{
+		InputTokens:      int64Ptr(longContextThresholdTokens),
+		OutputTokens:     int64Ptr(10_000),
+		CachedTokens:     int64Ptr(40_000),
+		CacheWriteTokens: int64Ptr(20_000),
+	}
+	base := estimateCostUSD(defaultModelPricing, "gpt-5.6-sol", baseUsage)
+	if base == nil {
+		t.Fatal("expected base cost")
+	}
+	baseWant := ((272_000-40_000-20_000)*4.00 + 40_000*0.40 + 20_000*5.00 + 10_000*20.00) / 1e6
+	if math.Abs(*base-baseWant) > 1e-9 {
+		t.Fatalf("threshold cost = %v, want %v", *base, baseWant)
+	}
+
+	premiumUsage := baseUsage
+	premiumUsage.InputTokens = int64Ptr(longContextThresholdTokens + 1)
+	premium := estimateCostUSD(defaultModelPricing, "gpt-5.6-sol", premiumUsage)
+	if premium == nil {
+		t.Fatal("expected premium cost")
+	}
+	premiumWant := (((272_001-40_000-20_000)*4.00+40_000*0.40+20_000*5.00)*2 + 10_000*20.00*1.5) / 1e6
+	if math.Abs(*premium-premiumWant) > 1e-9 {
+		t.Fatalf("premium cost = %v, want %v", *premium, premiumWant)
 	}
 }
 
@@ -171,5 +212,38 @@ func TestLoadModelPricingOverride(t *testing.T) {
 	if _, ok := table["gpt-5.5"]; !ok {
 		t.Fatal("defaults should be preserved")
 	}
-	_ = os.Unsetenv("CODEX_AUTH_BROKER_PRICING")
+}
+
+func TestLoadModelPricingOverridePresenceAndNormalization(t *testing.T) {
+	t.Setenv("CODEX_AUTH_BROKER_PRICING", `{" GPT-5.5 ":{"input":6,"cache_write":0},"Custom-Model":{"input":1,"cached_input":0,"output":2}}`)
+	table, err := loadModelPricing()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := table["gpt-5.5"]; got.InputPerM != 6 || got.CachedPerM != 0.5 || got.CacheWritePerM != 0 || got.OutputPerM != 30 {
+		t.Fatalf("partial existing-model override = %+v", got)
+	}
+	custom, ok := lookupModelPricing(table, "CUSTOM-MODEL")
+	if !ok {
+		t.Fatal("case-normalized custom model was not found")
+	}
+	if custom.InputPerM != 1 || custom.CachedPerM != 0 || custom.CacheWritePerM != 1 || custom.OutputPerM != 2 {
+		t.Fatalf("custom override = %+v", custom)
+	}
+}
+
+func TestLoadModelPricingOverrideRejectsInvalidValues(t *testing.T) {
+	tests := []string{
+		`{"":{"input":1}}`,
+		`{"model":{"input":-1}}`,
+		`{"Model":{"input":1}," model ":{"output":2}}`,
+	}
+	for _, override := range tests {
+		t.Run(override, func(t *testing.T) {
+			t.Setenv("CODEX_AUTH_BROKER_PRICING", override)
+			if _, err := loadModelPricing(); err == nil {
+				t.Fatal("expected invalid pricing override to fail")
+			}
+		})
+	}
 }

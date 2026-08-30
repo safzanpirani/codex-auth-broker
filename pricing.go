@@ -5,25 +5,51 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"time"
 )
+
+const longContextThresholdTokens int64 = 272_000
 
 // modelPricing holds USD prices per one million tokens.
 type modelPricing struct {
-	InputPerM      float64 `json:"input"`
-	CachedPerM     float64 `json:"cached_input"`
-	CacheWritePerM float64 `json:"cache_write"`
-	OutputPerM     float64 `json:"output"`
+	InputPerM                   float64 `json:"input"`
+	CachedPerM                  float64 `json:"cached_input"`
+	CacheWritePerM              float64 `json:"cache_write"`
+	OutputPerM                  float64 `json:"output"`
+	LongContextThreshold        int64   `json:"-"`
+	LongContextInputMultiplier  float64 `json:"-"`
+	LongContextOutputMultiplier float64 `json:"-"`
+}
+
+type modelPricingOverride struct {
+	InputPerM      *float64 `json:"input"`
+	CachedPerM     *float64 `json:"cached_input"`
+	CacheWritePerM *float64 `json:"cache_write"`
+	OutputPerM     *float64 `json:"output"`
+}
+
+func longContextModelPricing(input, cached, cacheWrite, output float64) modelPricing {
+	return modelPricing{
+		InputPerM:                   input,
+		CachedPerM:                  cached,
+		CacheWritePerM:              cacheWrite,
+		OutputPerM:                  output,
+		LongContextThreshold:        longContextThresholdTokens,
+		LongContextInputMultiplier:  2,
+		LongContextOutputMultiplier: 1.5,
+	}
 }
 
 // defaultModelPricing mirrors OpenAI API list prices (USD per 1M tokens).
 // Costs are estimates of equivalent API spend; ChatGPT-plan requests are not
 // actually billed per token.
 var defaultModelPricing = map[string]modelPricing{
-	"gpt-5.6-sol":   {InputPerM: 5.00, CachedPerM: 0.50, CacheWritePerM: 6.25, OutputPerM: 30.00},
-	"gpt-5.6-terra": {InputPerM: 2.50, CachedPerM: 0.25, CacheWritePerM: 3.125, OutputPerM: 15.00},
-	"gpt-5.6-luna":  {InputPerM: 0.20, CachedPerM: 0.02, CacheWritePerM: 0.25, OutputPerM: 1.20},
-	"gpt-5.5":       {InputPerM: 5.00, CachedPerM: 0.50, CacheWritePerM: 5.00, OutputPerM: 30.00},
-	"gpt-5.4":       {InputPerM: 2.50, CachedPerM: 0.25, CacheWritePerM: 2.50, OutputPerM: 15.00},
+	"gpt-5.6":       longContextModelPricing(4.00, 0.40, 5.00, 20.00),
+	"gpt-5.6-sol":   longContextModelPricing(4.00, 0.40, 5.00, 20.00),
+	"gpt-5.6-terra": longContextModelPricing(2.00, 0.20, 2.50, 12.00),
+	"gpt-5.6-luna":  longContextModelPricing(0.20, 0.02, 0.25, 1.20),
+	"gpt-5.5":       longContextModelPricing(5.00, 0.50, 5.00, 30.00),
+	"gpt-5.4":       longContextModelPricing(2.50, 0.25, 2.50, 15.00),
 	"gpt-5.4-mini":  {InputPerM: 0.75, CachedPerM: 0.075, CacheWritePerM: 0.75, OutputPerM: 4.50},
 	"gpt-5.3-codex": {InputPerM: 1.75, CachedPerM: 0.175, CacheWritePerM: 1.75, OutputPerM: 14.00},
 }
@@ -40,21 +66,48 @@ func loadModelPricing() (map[string]modelPricing, error) {
 	if raw == "" {
 		return table, nil
 	}
-	var overrides map[string]modelPricing
+	var overrides map[string]modelPricingOverride
 	if err := json.Unmarshal([]byte(raw), &overrides); err != nil {
 		return nil, fmt.Errorf("invalid CODEX_AUTH_BROKER_PRICING: %w", err)
 	}
-	for model, pricing := range overrides {
-		if pricing.CacheWritePerM == 0 {
+	normalized := make(map[string]modelPricingOverride, len(overrides))
+	for model, override := range overrides {
+		model = strings.ToLower(strings.TrimSpace(model))
+		if model == "" {
+			return nil, fmt.Errorf("invalid CODEX_AUTH_BROKER_PRICING: model id must not be empty")
+		}
+		if _, exists := normalized[model]; exists {
+			return nil, fmt.Errorf("invalid CODEX_AUTH_BROKER_PRICING: duplicate model id %q after normalization", model)
+		}
+		normalized[model] = override
+	}
+	for model, override := range normalized {
+		pricing := table[model]
+		if override.InputPerM != nil {
+			pricing.InputPerM = *override.InputPerM
+		}
+		if override.CachedPerM != nil {
+			pricing.CachedPerM = *override.CachedPerM
+		}
+		if override.CacheWritePerM != nil {
+			pricing.CacheWritePerM = *override.CacheWritePerM
+		} else if _, exists := table[model]; !exists {
 			pricing.CacheWritePerM = pricing.InputPerM
 		}
-		table[strings.TrimSpace(model)] = pricing
+		if override.OutputPerM != nil {
+			pricing.OutputPerM = *override.OutputPerM
+		}
+		if pricing.InputPerM < 0 || pricing.CachedPerM < 0 || pricing.CacheWritePerM < 0 || pricing.OutputPerM < 0 {
+			return nil, fmt.Errorf("invalid CODEX_AUTH_BROKER_PRICING for %q: prices must be nonnegative", model)
+		}
+		table[model] = pricing
 	}
 	return table, nil
 }
 
-// lookupModelPricing matches the model exactly, then by longest configured
-// prefix so dated or suffixed ids (gpt-5.4-2026-01-15) still price.
+// lookupModelPricing matches the model exactly, then accepts only a dated
+// snapshot suffix such as gpt-5.4-2026-03-05. Arbitrary prefix matching would
+// misprice distinct families such as gpt-5.4-pro and gpt-5.4-nano.
 func lookupModelPricing(table map[string]modelPricing, model string) (modelPricing, bool) {
 	model = strings.TrimSpace(strings.ToLower(model))
 	if model == "" {
@@ -66,12 +119,25 @@ func lookupModelPricing(table map[string]modelPricing, model string) (modelPrici
 	bestLen := 0
 	var best modelPricing
 	for candidate, pricing := range table {
-		if strings.HasPrefix(model, candidate) && len(candidate) > bestLen {
+		if isDatedModelSnapshot(model, candidate) && len(candidate) > bestLen {
 			bestLen = len(candidate)
 			best = pricing
 		}
 	}
 	return best, bestLen > 0
+}
+
+func isDatedModelSnapshot(model, candidate string) bool {
+	prefix := candidate + "-"
+	if !strings.HasPrefix(model, prefix) {
+		return false
+	}
+	date := strings.TrimPrefix(model, prefix)
+	if len(date) != len("2006-01-02") {
+		return false
+	}
+	_, err := time.Parse("2006-01-02", date)
+	return err == nil
 }
 
 // estimateCostUSD prices one request from its token usage. Cached tokens are
@@ -101,9 +167,16 @@ func estimateCostUSD(table map[string]modelPricing, model string, usage tokenUsa
 	if cacheWrite > input-cached {
 		cacheWrite = input - cached
 	}
+	inputMultiplier := 1.0
+	outputMultiplier := 1.0
+	if usage.InputTokens != nil && pricing.LongContextThreshold > 0 && *usage.InputTokens > pricing.LongContextThreshold {
+		inputMultiplier = pricing.LongContextInputMultiplier
+		outputMultiplier = pricing.LongContextOutputMultiplier
+	}
 	cost := ((input-cached-cacheWrite)*pricing.InputPerM +
 		cached*pricing.CachedPerM +
-		cacheWrite*pricing.CacheWritePerM +
-		output*pricing.OutputPerM) / 1e6
+		cacheWrite*pricing.CacheWritePerM) * inputMultiplier
+	cost += output * pricing.OutputPerM * outputMultiplier
+	cost /= 1e6
 	return &cost
 }

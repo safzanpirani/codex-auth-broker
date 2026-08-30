@@ -5,6 +5,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 	"time"
 )
@@ -43,6 +44,7 @@ func TestParseKeysFile(t *testing.T) {
 		{name: "missing key", raw: `[{"name":"backend","role":"client"}]`, wantErr: true},
 		{name: "bad role", raw: `[{"name":"backend","key":"k1","role":"root"}]`, wantErr: true},
 		{name: "duplicate name", raw: `[{"name":"a","key":"k1"},{"name":"a","key":"k2"}]`, wantErr: true},
+		{name: "duplicate key", raw: `[{"name":"a","key":"shared"},{"name":"b","key":"shared"}]`, wantErr: true},
 		{name: "invalid JSON", raw: `{`, wantErr: true},
 		{name: "object not array", raw: `{"name":"a","key":"k1"}`, wantErr: true},
 	}
@@ -168,6 +170,29 @@ func TestNewKeyRegistryRejectsBadStartupFile(t *testing.T) {
 	}
 	if _, err := newKeyRegistry("", filepath.Join(t.TempDir(), "missing.json")); err == nil {
 		t.Fatal("missing startup keys file accepted")
+	}
+}
+
+func TestNewKeyRegistryRejectsImplicitKeyCollision(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "keys.json")
+	if err := os.WriteFile(path, []byte(`[{"name":"backend","key":"shared","role":"client"}]`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := newKeyRegistry("shared", path); err == nil {
+		t.Fatal("keys file reused the implicit admin key")
+	}
+}
+
+func TestNewKeyRegistryRejectsPermissiveFileMode(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows file modes do not represent ACL privacy")
+	}
+	path := filepath.Join(t.TempDir(), "keys.json")
+	if err := os.WriteFile(path, []byte(`[{"name":"backend","key":"secret"}]`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := newKeyRegistry("", path); err == nil {
+		t.Fatal("keys file with group or world permissions was accepted")
 	}
 }
 

@@ -4,9 +4,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"time"
 )
@@ -28,15 +30,6 @@ func secondsUntil(t, now time.Time) int64 {
 		return 0
 	}
 	return seconds
-}
-
-func firstNonEmptyEnv(names ...string) string {
-	for _, name := range names {
-		if value := strings.TrimSpace(os.Getenv(name)); value != "" {
-			return value
-		}
-	}
-	return ""
 }
 
 func envOr(key, fallback string) string {
@@ -79,12 +72,35 @@ func expandPath(path string) (string, error) {
 	return path, nil
 }
 
+func canonicalAuthPath(path string) (string, error) {
+	expanded, err := expandPath(strings.TrimSpace(path))
+	if err != nil {
+		return "", err
+	}
+	if expanded == "" {
+		return "", errors.New("auth file path must not be empty")
+	}
+	absolute, err := filepath.Abs(expanded)
+	if err != nil {
+		return "", err
+	}
+	absolute = filepath.Clean(absolute)
+	resolved, err := filepath.EvalSymlinks(absolute)
+	if err == nil {
+		return resolved, nil
+	}
+	if os.IsNotExist(err) {
+		return absolute, nil
+	}
+	return "", err
+}
+
 func readSecretFile(path string) (string, error) {
 	expanded, err := expandPath(path)
 	if err != nil {
 		return "", err
 	}
-	raw, err := os.ReadFile(expanded)
+	raw, _, err := readPrivateFile(expanded)
 	if err != nil {
 		return "", err
 	}
@@ -93,6 +109,31 @@ func readSecretFile(path string) (string, error) {
 		return "", fmt.Errorf("secret file %s is empty", expanded)
 	}
 	return secret, nil
+}
+
+func readPrivateFile(path string) ([]byte, os.FileInfo, error) {
+	file, err := os.Open(path)
+	if err != nil {
+		return nil, nil, err
+	}
+	defer file.Close()
+	stat, err := file.Stat()
+	if err != nil {
+		return nil, nil, err
+	}
+	if !stat.Mode().IsRegular() {
+		return nil, nil, fmt.Errorf("secret file %s is not a regular file", path)
+	}
+	if runtime.GOOS != "windows" {
+		if permissions := stat.Mode().Perm(); permissions&0o077 != 0 {
+			return nil, nil, fmt.Errorf("secret file %s has permissions %04o; use 0600", path, permissions)
+		}
+	}
+	raw, err := io.ReadAll(file)
+	if err != nil {
+		return nil, nil, err
+	}
+	return raw, stat, nil
 }
 
 func redactTokenLikeText(value string) string {

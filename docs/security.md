@@ -25,6 +25,7 @@ headers.
 - Bind to `127.0.0.1` by default.
 - Use Tailscale or another private network for remote Factory Droid.
 - Set `--api-key-file` when binding to anything other than localhost.
+- Keep API key files and named keys files mode `0600`.
 - Keep `~/.codex/auth.json` mode `0600`.
 - Treat the client API key as sensitive.
 - Treat `/dashboard` as a local operational console. The dashboard API uses the

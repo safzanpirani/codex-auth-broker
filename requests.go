@@ -78,6 +78,7 @@ func (s *requestLogStore) add(entry requestLogEntry) {
 	if s == nil || s.limit == 0 {
 		return
 	}
+	entry = sanitizeRequestLogEntry(entry)
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.nextID++
@@ -152,13 +153,17 @@ func (s *requestLogStore) snapshot(limit int) requestLogSnapshot {
 	}
 }
 
-func (s *requestLogStore) clear() {
+func (s *requestLogStore) clear() error {
 	if s == nil {
-		return
+		return nil
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if err := s.persist.clear(); err != nil {
+		return err
+	}
 	s.entries = nil
+	return nil
 }
 
 func (p *responsesProxy) beginRequestLog(r *http.Request) *pendingRequestLog {
@@ -196,7 +201,6 @@ func (l *pendingRequestLog) finish() {
 		l.Entry.Status = http.StatusOK
 	}
 	l.Entry.DurationMS = time.Since(l.started).Milliseconds()
-	l.Entry.Error = truncateLogField(redactTokenLikeText(l.Entry.Error), 300)
 	model := valueOr(l.Entry.NormalizedModel, l.Entry.Model)
 	l.Entry.CostUSD = estimateCostUSD(l.store.pricing, model, tokenUsage{
 		InputTokens:      l.Entry.InputTokens,
@@ -247,7 +251,9 @@ func (l *pendingRequestLog) markRequest(body map[string]any, info requestInfo, r
 	l.Entry.ServiceTier = info.ServiceTier
 	l.Entry.Stream = info.Stream
 	l.Entry.PromptCacheKeySet = info.PromptCacheKeySet
-	l.Entry.PromptCacheKey = info.PromptCacheKey
+	if info.PromptCacheKey != "" {
+		l.Entry.PromptCacheKey = "sha256:" + secretFingerprint(info.PromptCacheKey)
+	}
 	l.Entry.PromptCacheRetentionSet = info.PromptCacheRetentionSet
 	l.Entry.PromptCacheRetention = info.PromptCacheRetention
 	if user := extractBrokerUser(r, info.PromptCacheKey); user != "" {
@@ -357,6 +363,43 @@ func truncateLogField(value string, max int) string {
 		return value
 	}
 	return value[:max-1] + "..."
+}
+
+func sanitizeRequestLogEntry(entry requestLogEntry) requestLogEntry {
+	clean := func(value string, max int) string {
+		return truncateLogField(redactTokenLikeText(value), max)
+	}
+	entry.Method = clean(entry.Method, 16)
+	entry.Path = clean(entry.Path, 256)
+	entry.Client = clean(entry.Client, 128)
+	entry.ClientName = clean(entry.ClientName, 128)
+	entry.User = clean(entry.User, maxBrokerUserLen)
+	entry.RequestID = clean(entry.RequestID, 256)
+	entry.Model = clean(entry.Model, 256)
+	entry.NormalizedModel = clean(entry.NormalizedModel, 256)
+	entry.ReasoningEffort = clean(entry.ReasoningEffort, 64)
+	entry.ServiceTier = clean(entry.ServiceTier, 64)
+	entry.AppliedServiceTier = clean(entry.AppliedServiceTier, 64)
+	entry.Error = clean(entry.Error, 300)
+	if entry.PromptCacheKey != "" && !isRequestLogFingerprint(entry.PromptCacheKey) {
+		entry.PromptCacheKey = "sha256:" + secretFingerprint(entry.PromptCacheKey)
+	}
+	entry.PromptCacheKey = clean(entry.PromptCacheKey, 64)
+	entry.PromptCacheRetention = clean(entry.PromptCacheRetention, 64)
+	return entry
+}
+
+func isRequestLogFingerprint(value string) bool {
+	const prefix = "sha256:"
+	if len(value) != len(prefix)+12 || !strings.HasPrefix(value, prefix) {
+		return false
+	}
+	for _, char := range value[len(prefix):] {
+		if !((char >= '0' && char <= '9') || (char >= 'a' && char <= 'f')) {
+			return false
+		}
+	}
+	return true
 }
 
 func requestLimitFromQuery(r *http.Request, fallback int) int {

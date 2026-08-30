@@ -417,7 +417,10 @@ func TestHandleChatCompletionsPreservesInstructionOrder(t *testing.T) {
 }
 
 func TestHandleChatCompletionsEndToEnd(t *testing.T) {
-	upstreamRequests := make(chan map[string]any, 1)
+	upstreamRequests := make(chan struct {
+		body        map[string]any
+		routingHint string
+	}, 2)
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var body map[string]any
 		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
@@ -425,14 +428,17 @@ func TestHandleChatCompletionsEndToEnd(t *testing.T) {
 			w.WriteHeader(http.StatusBadRequest)
 			return
 		}
-		upstreamRequests <- body
+		upstreamRequests <- struct {
+			body        map[string]any
+			routingHint string
+		}{body: body, routingHint: r.Header.Get(codexRoutingHintHeader)}
 		w.Header().Set("Content-Type", "text/event-stream")
 		_, _ = w.Write([]byte(strings.Join([]string{
 			"event: response.output_item.done",
 			`data: {"type":"response.output_item.done","output_index":0,"item":{"id":"msg_1","type":"message","role":"assistant","content":[{"type":"output_text","text":"CHAT_OK"}]}}`,
 			"",
 			"event: response.completed",
-			`data: {"type":"response.completed","response":{"id":"resp_e2e","created_at":1700000000,"model":"gpt-5.5","status":"completed","output":[],"usage":{"input_tokens":1200,"output_tokens":2,"total_tokens":1202,"input_tokens_details":{"cached_tokens":1024}}}}`,
+			`data: {"type":"response.completed","response":{"id":"resp_e2e","created_at":1700000000,"model":"gpt-5.5","status":"completed","service_tier":"default","output":[],"usage":{"input_tokens":1200,"output_tokens":2,"total_tokens":1202,"input_tokens_details":{"cached_tokens":1024}}}}`,
 			"",
 		}, "\n")))
 	}))
@@ -456,6 +462,7 @@ func TestHandleChatCompletionsEndToEnd(t *testing.T) {
 	request := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{
 		"model":"gpt-5.5",
 		"messages":[{"role":"user","content":"Reply exactly: CHAT_OK"}],
+		"serviceTier":"fast",
 		"prompt_cache_key":"chat-session",
 		"stream":false
 	}`))
@@ -476,13 +483,23 @@ func TestHandleChatCompletionsEndToEnd(t *testing.T) {
 	if message["content"] != "CHAT_OK" {
 		t.Fatalf("completion = %#v", completion)
 	}
+	if completion["service_tier"] != "default" {
+		t.Fatalf("downstream service_tier = %#v, want upstream-applied default", completion["service_tier"])
+	}
 
-	upstreamBody := <-upstreamRequests
+	upstreamRequest := <-upstreamRequests
+	upstreamBody := upstreamRequest.body
 	if upstreamBody["stream"] != true {
 		t.Fatalf("upstream stream = %#v, want true", upstreamBody["stream"])
 	}
 	if upstreamBody["prompt_cache_key"] != "chat-session" {
 		t.Fatalf("upstream prompt_cache_key = %#v", upstreamBody["prompt_cache_key"])
+	}
+	if upstreamBody["service_tier"] != "priority" {
+		t.Fatalf("upstream service_tier = %#v, want priority", upstreamBody["service_tier"])
+	}
+	if upstreamRequest.routingHint != "model=gpt-5.5;tier=priority" {
+		t.Fatalf("%s = %q, want model=gpt-5.5;tier=priority", codexRoutingHintHeader, upstreamRequest.routingHint)
 	}
 	if _, exists := upstreamBody["messages"]; exists {
 		t.Fatal("Chat messages must be translated before upstream dispatch")
@@ -495,6 +512,9 @@ func TestHandleChatCompletionsEndToEnd(t *testing.T) {
 	entry := snapshot.RequestLog[0]
 	if entry.Path != "/v1/chat/completions" || entry.CachedTokens == nil || *entry.CachedTokens != 1024 {
 		t.Fatalf("request log entry = %#v", entry)
+	}
+	if entry.ServiceTier != "priority" || entry.AppliedServiceTier != "default" {
+		t.Fatalf("service tiers = requested %q applied %q, want priority/default", entry.ServiceTier, entry.AppliedServiceTier)
 	}
 
 	// Disabling request history is a supported configuration and must not make

@@ -28,6 +28,10 @@ const (
 	// remoteCompactionFeature gates native Codex compaction. A request carrying a
 	// compaction_trigger input item is rejected upstream without it.
 	remoteCompactionFeature = "remote_compaction_v2"
+	// codexRoutingHintHeader is sent by the official Codex client for
+	// ChatGPT-authenticated requests. The backend uses it alongside the request
+	// body's model and service_tier when selecting a route.
+	codexRoutingHintHeader = "x-codex-routing-hint"
 )
 
 type responsesProxy struct {
@@ -68,21 +72,13 @@ type requestInfo struct {
 }
 
 func (p *responsesProxy) handleHealth(w http.ResponseWriter, _ *http.Request) {
-	now := time.Now()
-	accounts := p.pool.statuses(now)
-	availableAccounts := 0
-	for _, a := range accounts {
-		if ok, _ := a["available"].(bool); ok {
-			availableAccounts++
-		}
-	}
+	totalAccounts, availableAccounts := p.pool.availability(time.Now())
 	writeJSON(w, http.StatusOK, map[string]any{
 		"status":             "ok",
 		"version":            version,
 		"commit":             commit,
 		"mode":               "responses-proxy",
-		"accounts":           accounts,
-		"accounts_total":     len(accounts),
+		"accounts_total":     totalAccounts,
 		"accounts_available": availableAccounts,
 		"concurrency":        p.limiter.stats(),
 	})
@@ -147,7 +143,6 @@ func (p *responsesProxy) fetchUpstreamModelIDs(ctx context.Context) ([]string, e
 	if err != nil {
 		return nil, fmt.Errorf("Codex auth failed: %w", err)
 	}
-	acct.noteAccountID(access.AccountID)
 
 	endpoint := p.cfg.modelsURL
 	if clientVersion := strings.TrimSpace(p.cfg.modelsClientVersion); clientVersion != "" {
@@ -250,9 +245,9 @@ func (p *responsesProxy) handleResponses(w http.ResponseWriter, r *http.Request)
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		responseBody, _ := io.ReadAll(io.LimitReader(resp.Body, 64*1024))
 		logEntry.markError(resp.StatusCode, summarizeUpstreamError(responseBody, resp.StatusCode))
-		log.Printf("upstream responses error status=%d model=%s body_len=%d body=%q request_shape=%s",
-			resp.StatusCode, info.NormalizedModel, len(responseBody),
-			redactTokenLikeText(string(responseBody)), requestShape(upstreamBody))
+		log.Printf("upstream responses error status=%d model=%s body_len=%d summary=%q request_shape=%s",
+			resp.StatusCode, truncateLogField(info.NormalizedModel, 256), len(responseBody),
+			summarizeUpstreamError(responseBody, resp.StatusCode), requestShape(upstreamBody))
 		if len(bytes.TrimSpace(responseBody)) == 0 {
 			writeProxyError(w, resp.StatusCode, fmt.Sprintf("upstream returned %d with an empty body", resp.StatusCode))
 			return
@@ -307,7 +302,6 @@ func (p *responsesProxy) dispatchUpstream(ctx context.Context, encoded []byte, i
 			log.Printf("codex account %s auth failed: %v; rotating", acct.label, err)
 			continue
 		}
-		acct.noteAccountID(access.AccountID)
 		req, err := p.buildUpstreamRequest(ctx, encoded, info, body, r, access)
 		if err != nil {
 			return nil, &dispatchFailure{status: http.StatusBadGateway, message: "build upstream request failed"}
@@ -352,6 +346,9 @@ func (p *responsesProxy) buildUpstreamRequest(ctx context.Context, encoded []byt
 	req.Header.Set("Authorization", "Bearer "+access.AccessToken)
 	req.Header.Set("chatgpt-account-id", access.AccountID)
 	p.setClientIdentity(req)
+	if routingHint := buildCodexRoutingHint(info.NormalizedModel, stringField(body, "service_tier")); routingHint != "" {
+		req.Header.Set(codexRoutingHintHeader, routingHint)
+	}
 	req.Header.Set("OpenAI-Beta", "responses=experimental")
 	req.Header.Set("Content-Type", "application/json")
 	if info.Stream {
@@ -423,6 +420,13 @@ func decodeRequestBody(r io.Reader, contentEncoding string) (map[string]any, err
 	}
 	if body == nil {
 		return nil, errors.New("request body must be a JSON object")
+	}
+	var trailing any
+	if err := decoder.Decode(&trailing); err != io.EOF {
+		if err == nil {
+			return nil, errors.New("invalid JSON request body: multiple JSON values")
+		}
+		return nil, fmt.Errorf("invalid JSON request body: trailing data: %w", err)
 	}
 	return body, nil
 }
@@ -553,6 +557,82 @@ func (p *responsesProxy) setClientIdentity(req *http.Request) {
 	}
 }
 
+// buildCodexRoutingHint mirrors the official Codex client's connection-routing
+// header for ChatGPT-authenticated requests. Components reject whitespace,
+// delimiters, controls, and non-ASCII bytes so a client-supplied model cannot
+// add a second routing parameter or inject another header.
+func buildCodexRoutingHint(model, serviceTier string) string {
+	model = strings.TrimSpace(model)
+	serviceTier = strings.TrimSpace(serviceTier)
+	if !validCodexRoutingHintComponent(model) || (serviceTier != "" && !validCodexRoutingHintComponent(serviceTier)) {
+		return ""
+	}
+	hint := "model=" + model
+	if serviceTier != "" {
+		hint += ";tier=" + serviceTier
+	}
+	return hint
+}
+
+func validCodexRoutingHintComponent(value string) bool {
+	if value == "" || len(value) > 256 {
+		return false
+	}
+	for index := 0; index < len(value); index++ {
+		char := value[index]
+		if char <= ' ' || char >= 0x7f || char == ';' || char == '=' {
+			return false
+		}
+	}
+	return true
+}
+
+// normalizeCodexRoutingHint validates a connection-level hint supplied by a
+// WebSocket client and applies the same model/tier aliases as response.create.
+// The WebSocket handshake occurs before the broker can read response.create,
+// so forwarding a validated client hint is the only way to preserve the
+// official Codex connection-routing signal without changing the protocol.
+func normalizeCodexRoutingHint(value string) string {
+	parts := strings.Split(strings.TrimSpace(value), ";")
+	if len(parts) == 0 || len(parts) > 2 {
+		return ""
+	}
+	model := ""
+	serviceTier := ""
+	for _, part := range parts {
+		key, component, ok := strings.Cut(strings.TrimSpace(part), "=")
+		if !ok {
+			return ""
+		}
+		switch key {
+		case "model":
+			if model != "" {
+				return ""
+			}
+			model, _ = normalizeFactoryModel(component)
+		case "tier":
+			if serviceTier != "" {
+				return ""
+			}
+			switch strings.ToLower(strings.TrimSpace(component)) {
+			case "fast", "priority":
+				serviceTier = "priority"
+			case "flex", "ultrafast":
+				serviceTier = strings.ToLower(strings.TrimSpace(component))
+			case "auto", "default":
+				// Official Codex omits explicit standard/default tiers on the
+				// wire, leaving only the model routing hint.
+				serviceTier = ""
+			default:
+				return ""
+			}
+		default:
+			return ""
+		}
+	}
+	return buildCodexRoutingHint(model, serviceTier)
+}
+
 func normalizeReasoningEffort(value string) string {
 	switch strings.ToLower(strings.TrimSpace(value)) {
 	case "minimal":
@@ -626,8 +706,18 @@ func normalizeServiceTier(body map[string]any) string {
 	}
 	normalized := strings.ToLower(strings.TrimSpace(raw))
 	switch normalized {
-	case "auto", "default", "priority", "ultrafast":
+	case "fast":
+		normalized = "priority"
 		body["service_tier"] = normalized
+	case "priority", "flex", "ultrafast":
+		// TODO(review): Filter tiers against the selected model's live service_tiers once that catalog metadata is available in this path.
+		body["service_tier"] = normalized
+	case "auto", "default":
+		// The public API accepts these values, but the ChatGPT Codex backend
+		// rejects explicit "auto" and official Codex omits its "default"
+		// sentinel. Preserve the requested intent in requestInfo while matching
+		// the official client on the wire.
+		delete(body, "service_tier")
 	default:
 		normalized = ""
 		delete(body, "service_tier")
@@ -755,140 +845,26 @@ func removeUnsupportedParams(body map[string]any) {
 }
 
 func requestShape(body map[string]any) string {
-	keys := make([]string, 0, len(body))
-	for key := range body {
-		keys = append(keys, key)
-	}
-	sort.Strings(keys)
-	shape := map[string]any{"keys": keys}
-	for _, key := range []string{
-		"model",
-		"stream",
-		"store",
-		"tool_choice",
-		"parallel_tool_calls",
-		"truncation",
-		"prompt_cache_key",
-		"prompt_cache_retention",
-		"service_tier",
-	} {
-		if value, ok := body[key]; ok {
-			shape[key] = summarizeValue(value)
+	shape := map[string]any{"field_count": len(body)}
+	for _, key := range []string{"model", "stream", "store", "tool_choice", "parallel_tool_calls", "truncation", "prompt_cache_key", "prompt_cache_retention", "service_tier", "reasoning", "text", "include", "tools", "input"} {
+		if _, ok := body[key]; ok {
+			shape["has_"+key] = true
 		}
-	}
-	if reasoning, ok := body["reasoning"].(map[string]any); ok {
-		shape["reasoning"] = summarizeMap(reasoning)
-	}
-	if text, ok := body["text"].(map[string]any); ok {
-		shape["text"] = summarizeMap(text)
 	}
 	if include, ok := body["include"].([]any); ok {
 		shape["include_len"] = len(include)
-		shape["include"] = summarizeList(include, 8)
 	}
 	if tools, ok := body["tools"].([]any); ok {
 		shape["tools_len"] = len(tools)
-		shape["tools"] = summarizeTools(tools)
-		if len(tools) > 0 {
-			shape["first_tool"] = summarizeValue(tools[0])
-		}
 	}
 	if input, ok := body["input"].([]any); ok {
 		shape["input_len"] = len(input)
-		if len(input) > 0 {
-			shape["first_input"] = summarizeValue(input[0])
-		}
 	}
 	encoded, err := json.Marshal(shape)
 	if err != nil {
 		return "{}"
 	}
 	return string(encoded)
-}
-
-func summarizeMap(m map[string]any) map[string]any {
-	out := make(map[string]any, len(m))
-	keys := make([]string, 0, len(m))
-	for key := range m {
-		keys = append(keys, key)
-	}
-	sort.Strings(keys)
-	for _, key := range keys {
-		switch key {
-		case "text", "instructions", "content", "input":
-			out[key] = "[redacted]"
-		default:
-			out[key] = summarizeValue(m[key])
-		}
-	}
-	return out
-}
-
-func summarizeList(values []any, max int) []any {
-	limit := len(values)
-	if limit > max {
-		limit = max
-	}
-	out := make([]any, 0, limit)
-	for _, value := range values[:limit] {
-		out = append(out, summarizeValue(value))
-	}
-	return out
-}
-
-func summarizeTools(tools []any) []any {
-	out := make([]any, 0, len(tools))
-	for _, tool := range tools {
-		toolMap, ok := tool.(map[string]any)
-		if !ok {
-			out = append(out, summarizeValue(tool))
-			continue
-		}
-		summary := map[string]any{
-			"type": stringField(toolMap, "type"),
-			"name": stringField(toolMap, "name"),
-		}
-		if params, ok := toolMap["parameters"].(map[string]any); ok {
-			summary["parameter_keys"] = sortedMapKeys(params)
-			if properties, ok := params["properties"].(map[string]any); ok {
-				summary["property_keys"] = sortedMapKeys(properties)
-			}
-		}
-		out = append(out, summary)
-	}
-	return out
-}
-
-func summarizeValue(value any) any {
-	switch v := value.(type) {
-	case string:
-		if len(v) > 80 {
-			return fmt.Sprintf("[string len=%d]", len(v))
-		}
-		return v
-	case bool, nil, json.Number:
-		return v
-	case float64, int, int64:
-		return v
-	case map[string]any:
-		return summarizeMap(v)
-	case []any:
-		return map[string]any{
-			"len":   len(v),
-			"items": summarizeList(v, 4),
-		}
-	default:
-		return fmt.Sprintf("[%T]", value)
-	}
-}
-
-func sortedMapKeys(m map[string]any) []string {
-	keys := make([]string, 0, len(m))
-	for key := range m {
-		keys = append(keys, key)
-	}
-	sort.Strings(keys)
-	return keys
 }
 
 func requestID(r *http.Request, body map[string]any) string {
@@ -1116,11 +1092,45 @@ func normalizeUpstreamErrorBody(body []byte, status int) []byte {
 }
 
 func summarizeUpstreamError(body []byte, status int) string {
-	trimmed := strings.TrimSpace(redactTokenLikeText(string(body)))
-	if trimmed == "" {
-		return fmt.Sprintf("upstream returned %d with an empty body", status)
+	summary := fmt.Sprintf("upstream returned %d", status)
+	if len(bytes.TrimSpace(body)) == 0 {
+		return summary + " with an empty body"
 	}
-	return trimmed
+	var parsed map[string]any
+	if json.Unmarshal(body, &parsed) != nil {
+		return summary
+	}
+	errorBody, _ := parsed["error"].(map[string]any)
+	if errorBody == nil {
+		errorBody = parsed
+	}
+	if attributes := safeErrorAttributes(errorBody); attributes != "" {
+		summary += " (" + attributes + ")"
+	}
+	return summary
+}
+
+func safeErrorAttributes(errorBody map[string]any) string {
+	var attributes []string
+	for _, key := range []string{"type", "code"} {
+		if value := safeErrorAttribute(errorBody[key]); value != "" {
+			attributes = append(attributes, key+"="+value)
+		}
+	}
+	return strings.Join(attributes, " ")
+}
+
+func safeErrorAttribute(value any) string {
+	text := strings.TrimSpace(fmt.Sprint(value))
+	if text == "" || len(text) > 64 {
+		return ""
+	}
+	for _, r := range text {
+		if !((r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '-' || r == '_' || r == '.') {
+			return ""
+		}
+	}
+	return text
 }
 
 type sseUsageTracker struct {

@@ -124,19 +124,14 @@ broker down.
 
 ## Observability
 
-`/healthz` reports the pool:
+`/healthz` reports aggregate pool availability without exposing account
+labels, account IDs, or cooldown reasons:
 
 ```json
 {
   "status": "ok",
   "accounts_total": 2,
-  "accounts_available": 1,
-  "accounts": [
-    {"index": 0, "label": ".codex", "available": true},
-    {"index": 1, "label": ".codex-2", "available": false,
-     "cooldown_until": "2026-07-09T15:30:00Z", "cooldown_seconds": 1420,
-     "last_reason": "5h"}
-  ]
+  "accounts_available": 1
 }
 ```
 

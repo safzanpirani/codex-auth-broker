@@ -122,7 +122,7 @@ func runServe(args []string) error {
 	}
 	requests := newRequestLogStore(cfg.requestLogLimit)
 	requests.pricing = pricing
-	if path := strings.TrimSpace(cfg.requestLogFile); path != "" {
+	if path := strings.TrimSpace(cfg.requestLogFile); path != "" && cfg.requestLogLimit > 0 {
 		restored, maxID, err := loadPersistedEntries(path, cfg.requestLogLimit)
 		if err != nil {
 			return fmt.Errorf("load persisted request log: %w", err)
@@ -242,7 +242,7 @@ func loadConfig(args []string) (config, error) {
 	cfg := config{
 		listen:               envOr("CODEX_AUTH_BROKER_LISTEN", defaultListen),
 		authFile:             envOr("CODEX_AUTH_FILE", defaultAuthFile()),
-		apiKey:               firstNonEmptyEnv("CODEX_AUTH_BROKER_API_KEY", "OPENAI_API_KEY"),
+		apiKey:               envOr("CODEX_AUTH_BROKER_API_KEY", ""),
 		apiKeyFile:           envOr("CODEX_AUTH_BROKER_API_KEY_FILE", ""),
 		keysFile:             envOr("CODEX_AUTH_BROKER_KEYS_FILE", ""),
 		promptCacheKey:       envOr("CODEX_AUTH_BROKER_PROMPT_CACHE_KEY", defaultPromptKey),
@@ -313,12 +313,29 @@ func loadConfig(args []string) (config, error) {
 	if err := fs.Parse(args); err != nil {
 		return cfg, err
 	}
-
-	expanded, err := expandPath(cfg.authFile)
-	if err != nil {
-		return cfg, err
+	if fs.NArg() != 0 {
+		return cfg, fmt.Errorf("unexpected positional arguments: %s", strings.Join(fs.Args(), " "))
 	}
-	cfg.authFile = expanded
+	explicitAPIKey := false
+	explicitAPIKeyFile := false
+	fs.Visit(func(f *flag.Flag) {
+		switch f.Name {
+		case "api-key":
+			explicitAPIKey = true
+		case "api-key-file":
+			explicitAPIKeyFile = true
+		}
+	})
+	if explicitAPIKey && explicitAPIKeyFile {
+		return cfg, errors.New("api-key and api-key-file cannot both be set explicitly")
+	}
+	if explicitAPIKey {
+		cfg.apiKeyFile = ""
+	}
+	if explicitAPIKeyFile {
+		cfg.apiKey = ""
+	}
+
 	// Multi-account: --auth-files (or CODEX_AUTH_FILES) is a comma-separated pool
 	// that overrides --auth-file. Falls back to the single --auth-file so existing
 	// single-account setups keep working unchanged.
@@ -326,17 +343,23 @@ func loadConfig(args []string) (config, error) {
 	if len(files) == 0 {
 		files = []string{cfg.authFile}
 	}
-	seen := map[string]bool{}
+	seen := map[string]os.FileInfo{}
 	cfg.authFiles = make([]string, 0, len(files))
 	for _, f := range files {
-		ef, err := expandPath(f)
+		ef, err := canonicalAuthPath(f)
 		if err != nil {
 			return cfg, err
 		}
-		if seen[ef] {
-			continue
+		stat, statErr := os.Stat(ef)
+		if statErr != nil && !os.IsNotExist(statErr) {
+			return cfg, statErr
 		}
-		seen[ef] = true
+		for previousPath, previousStat := range seen {
+			if ef == previousPath || (statErr == nil && previousStat != nil && os.SameFile(stat, previousStat)) {
+				return cfg, fmt.Errorf("duplicate auth file %q", f)
+			}
+		}
+		seen[ef] = stat
 		cfg.authFiles = append(cfg.authFiles, ef)
 	}
 	cfg.authFile = cfg.authFiles[0]
@@ -360,11 +383,17 @@ func loadConfig(args []string) (config, error) {
 		return cfg, fmt.Errorf("invalid refresh-skew: %w", err)
 	}
 	cfg.refreshSkew = parsedSkew
+	if cfg.refreshSkew < 0 {
+		return cfg, errors.New("refresh-skew must be zero or greater")
+	}
 	parsedTimeout, err := time.ParseDuration(timeoutValue)
 	if err != nil {
 		return cfg, fmt.Errorf("invalid timeout: %w", err)
 	}
 	cfg.timeout = parsedTimeout
+	if cfg.timeout < 0 {
+		return cfg, errors.New("timeout must be zero or greater")
+	}
 	if retention := strings.TrimSpace(cfg.promptCacheRetention); retention != "" && retention != "in_memory" && retention != "24h" {
 		return cfg, errors.New("prompt-cache-retention must be empty, in_memory, or 24h")
 	}

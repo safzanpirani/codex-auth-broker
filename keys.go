@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"log"
 	"net/http"
-	"os"
 	"strings"
 	"sync"
 	"time"
@@ -71,16 +70,15 @@ func newKeyRegistry(apiKey, keysFile string) (*keyRegistry, error) {
 	if reg.path == "" {
 		return reg, nil
 	}
-	stat, err := os.Stat(reg.path)
-	if err != nil {
-		return nil, fmt.Errorf("keys file: %w", err)
-	}
-	raw, err := os.ReadFile(reg.path)
+	raw, stat, err := readPrivateFile(reg.path)
 	if err != nil {
 		return nil, fmt.Errorf("keys file: %w", err)
 	}
 	entries, err := parseKeysFile(raw)
 	if err != nil {
+		return nil, fmt.Errorf("keys file %s: %w", reg.path, err)
+	}
+	if err := rejectImplicitKeyCollision(reg.implicit, entries); err != nil {
 		return nil, fmt.Errorf("keys file %s: %w", reg.path, err)
 	}
 	reg.entries = entries
@@ -107,8 +105,10 @@ func parseKeysFile(raw []byte) ([]clientKey, error) {
 		return nil, fmt.Errorf("invalid JSON: %w", err)
 	}
 	seen := map[string]bool{}
+	seenKeys := map[string]string{}
 	for i := range entries {
 		entries[i].Name = strings.TrimSpace(entries[i].Name)
+		entries[i].Key = strings.TrimSpace(entries[i].Key)
 		entries[i].Role = strings.ToLower(strings.TrimSpace(entries[i].Role))
 		if entries[i].Name == "" {
 			return nil, fmt.Errorf("entry %d: name is required", i)
@@ -125,9 +125,25 @@ func parseKeysFile(raw []byte) ([]clientKey, error) {
 		if seen[entries[i].Name] {
 			return nil, fmt.Errorf("duplicate client name %q", entries[i].Name)
 		}
+		if previous := seenKeys[entries[i].Key]; previous != "" {
+			return nil, fmt.Errorf("client %q uses the same key as client %q", entries[i].Name, previous)
+		}
 		seen[entries[i].Name] = true
+		seenKeys[entries[i].Key] = entries[i].Name
 	}
 	return entries, nil
+}
+
+func rejectImplicitKeyCollision(implicit *clientKey, entries []clientKey) error {
+	if implicit == nil {
+		return nil
+	}
+	for _, entry := range entries {
+		if entry.Key == implicit.Key {
+			return fmt.Errorf("client %q uses the same key as the implicit %q client", entry.Name, implicitClientName)
+		}
+	}
+	return nil
 }
 
 // enabled reports whether client auth is configured at all. When false every
@@ -172,13 +188,13 @@ func (reg *keyRegistry) currentEntries() []clientKey {
 	defer reg.mu.Unlock()
 	if reg.path != "" && time.Since(reg.checked) >= reg.statInterval {
 		reg.checked = time.Now()
-		if stat, err := os.Stat(reg.path); err != nil {
-			log.Printf("keys file %s stat failed: %v; keeping %d loaded keys", reg.path, err, len(reg.entries))
+		raw, stat, err := readPrivateFile(reg.path)
+		if err != nil {
+			log.Printf("keys file %s read rejected: %v; keeping %d loaded keys", reg.path, err, len(reg.entries))
 		} else if !stat.ModTime().Equal(reg.mtime) || stat.Size() != reg.size {
-			raw, err := os.ReadFile(reg.path)
-			if err != nil {
-				log.Printf("keys file %s read failed: %v; keeping %d loaded keys", reg.path, err, len(reg.entries))
-			} else if entries, err := parseKeysFile(raw); err != nil {
+			if entries, err := parseKeysFile(raw); err != nil {
+				log.Printf("keys file %s reload rejected: %v; keeping %d loaded keys", reg.path, err, len(reg.entries))
+			} else if err := rejectImplicitKeyCollision(reg.implicit, entries); err != nil {
 				log.Printf("keys file %s reload rejected: %v; keeping %d loaded keys", reg.path, err, len(reg.entries))
 			} else {
 				reg.entries = entries

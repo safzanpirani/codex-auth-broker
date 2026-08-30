@@ -34,6 +34,19 @@ The result is a normal `chat.completion` object with one choice. Factory model
 suffixes such as `(low)`, `(medium)`, `(high)`, `(xhigh)`, and supported
 `(max)` variants use the same normalization as `/v1/responses`.
 
+## Fast Mode And Service Tiers
+
+Chat Completions accepts `service_tier` or `serviceTier`. Values `fast` and
+`priority` both become the current Codex Fast mode wire signal:
+`service_tier: "priority"` plus the matching `x-codex-routing-hint` upstream
+header. Explicit `auto` and `default` are omitted; omit the field for Standard
+routing.
+
+Both non-streaming completions and streaming chunks report `service_tier` only
+when the upstream Responses event reports it, and use the upstream-applied
+value. A returned `default` therefore means the backend did not apply Fast mode
+even if the request asked for it.
+
 ## Streaming
 
 ```bash

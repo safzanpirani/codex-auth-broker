@@ -21,11 +21,12 @@ chmod 600 ~/.codex-auth-broker/client.key
 Install the service:
 
 ```bash
-mkdir -p ~/.config/systemd/user
-cp packaging/systemd/codex-auth-broker.service ~/.config/systemd/user/
-systemctl --user daemon-reload
-systemctl --user enable --now codex-auth-broker.service
+./scripts/install-systemd-user.sh
 ```
+
+The installer resolves its assets relative to the script and writes the
+selected binary path into the unit. Set `BIN=/path/to/codex-auth-broker` when
+the binary does not live at `/usr/local/bin/codex-auth-broker`.
 
 Check it:
 
