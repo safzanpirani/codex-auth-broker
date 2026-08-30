@@ -25,13 +25,17 @@ func openRequestLogFile(path string) (*requestLogFile, error) {
 	if err := os.MkdirAll(filepath.Dir(expanded), 0o700); err != nil {
 		return nil, fmt.Errorf("create request log directory: %w", err)
 	}
-	file, err := os.OpenFile(expanded, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
+	file, err := os.OpenFile(expanded, os.O_CREATE|os.O_WRONLY, 0o600)
 	if err != nil {
 		return nil, fmt.Errorf("open request log file: %w", err)
 	}
 	if err := file.Chmod(0o600); err != nil {
 		_ = file.Close()
 		return nil, fmt.Errorf("secure request log file: %w", err)
+	}
+	if _, err := file.Seek(0, io.SeekEnd); err != nil {
+		_ = file.Close()
+		return nil, fmt.Errorf("seek request log file: %w", err)
 	}
 	return &requestLogFile{path: expanded, file: file}, nil
 }
@@ -43,6 +47,9 @@ func (f *requestLogFile) append(entry requestLogEntry) {
 	}
 	encoded, err := json.Marshal(entry)
 	if err != nil {
+		return
+	}
+	if _, err := f.file.Seek(0, io.SeekEnd); err != nil {
 		return
 	}
 	_, _ = f.file.Write(append(encoded, '\n'))

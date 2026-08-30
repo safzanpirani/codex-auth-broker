@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -131,6 +132,9 @@ func TestRequestLogClearTruncatesPersistence(t *testing.T) {
 }
 
 func TestOpenRequestLogFileTightensPermissions(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Unix permission modes are not available on Windows")
+	}
 	path := filepath.Join(t.TempDir(), "requests.jsonl")
 	if err := os.WriteFile(path, nil, 0o644); err != nil {
 		t.Fatal(err)

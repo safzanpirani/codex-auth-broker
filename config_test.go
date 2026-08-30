@@ -95,6 +95,9 @@ func TestLoadConfigRejectsAuthFileAliases(t *testing.T) {
 }
 
 func TestSystemdInstallerUsesSelectedBinaryAndScriptRelativeAssets(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("systemd and Unix permission modes are not available on Windows")
+	}
 	tempDir := t.TempDir()
 	binDir := filepath.Join(tempDir, "bin with spaces and 100%")
 	if err := os.MkdirAll(binDir, 0o700); err != nil {

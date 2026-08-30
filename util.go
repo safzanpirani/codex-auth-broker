@@ -169,6 +169,9 @@ func authFilePermissionWarning(path string) string {
 }
 
 func syncDir(dir string) error {
+	if runtime.GOOS == "windows" {
+		return nil
+	}
 	f, err := os.Open(dir)
 	if err != nil {
 		return err
