@@ -21,8 +21,8 @@ jobs:
       - name: Check formatting
         run: test -z "$(gofmt -l *.go)"
       - run: go vet ./...
-      - name: Dashboard behavior tests
-        run: node --test scripts/dashboard.test.cjs
+      - name: Browser behavior tests
+        run: node --test scripts/dashboard.test.cjs scripts/voice.test.cjs
       - run: go test -race ./...
       - run: go build -o codex-auth-broker .
 

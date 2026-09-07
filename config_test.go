@@ -7,7 +7,39 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+	"time"
 )
+
+func TestShutdownTimeoutConfiguration(t *testing.T) {
+	for _, test := range []struct {
+		name    string
+		env     string
+		args    []string
+		want    time.Duration
+		invalid bool
+	}{
+		{name: "default", want: 30 * time.Second},
+		{name: "environment", env: "1m", want: time.Minute},
+		{name: "flag precedence", env: "1m", args: []string{"--shutdown-timeout", "2s"}, want: 2 * time.Second},
+		{name: "immediate", args: []string{"--shutdown-timeout", "0"}},
+		{name: "negative", env: "-1s", invalid: true},
+		{name: "malformed", env: "later", invalid: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Setenv("CODEX_AUTH_BROKER_SHUTDOWN_TIMEOUT", test.env)
+			cfg, err := loadConfig(test.args)
+			if test.invalid {
+				if err == nil {
+					t.Fatal("invalid shutdown timeout accepted")
+				}
+				return
+			}
+			if err != nil || cfg.shutdownTimeout != test.want {
+				t.Fatalf("timeout %s, want %s; error=%v", cfg.shutdownTimeout, test.want, err)
+			}
+		})
+	}
+}
 
 func TestLoadConfigIgnoresOpenAIAPIKey(t *testing.T) {
 	t.Setenv("CODEX_AUTH_BROKER_API_KEY", "")

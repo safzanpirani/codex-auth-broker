@@ -64,7 +64,7 @@ func (p *responsesProxy) handleResponsesWebSocket(w http.ResponseWriter, r *http
 		return
 	}
 	defer upstream.CloseNow()
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := webSocketSessionContext(r)
 	defer cancel()
 
 	for _, key := range responsesWebSocketResponseHeaders {
@@ -93,10 +93,17 @@ func (p *responsesProxy) handleResponsesWebSocket(w http.ResponseWriter, r *http
 	}()
 
 	err = <-errorsCh
+	forced := ctx.Err() != nil
 	cancel()
+	if forced {
+		_ = upstream.CloseNow()
+		_ = downstream.CloseNow()
+	} else {
+		closeWebSocketPeer(upstream, err)
+		closeWebSocketPeer(downstream, err)
+	}
+	<-errorsCh // Both pumps must finish before the final log and slot release.
 	tracker.finishOpen(err)
-	closeWebSocketPeer(upstream, err)
-	closeWebSocketPeer(downstream, err)
 	log.Printf("responses websocket disconnected account=%s status=%d", acct.label, websocket.CloseStatus(err))
 }
 

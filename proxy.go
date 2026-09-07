@@ -43,7 +43,8 @@ type responsesProxy struct {
 	limiter *concurrencyLimiter
 	// keys resolves bearer tokens to named clients. nil falls back to an
 	// implicit registry built from cfg.apiKey (see registry()).
-	keys *keyRegistry
+	keys      *keyRegistry
+	liveCalls liveCallStore
 }
 
 // dispatchFailure describes why the failover loop could not return a usable

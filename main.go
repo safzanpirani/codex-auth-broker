@@ -6,10 +6,13 @@ import (
 	"flag"
 	"fmt"
 	"log"
+	"net"
 	"net/http"
 	"os"
+	"os/signal"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 )
 
@@ -69,6 +72,7 @@ type config struct {
 	alphaSearchURL       string
 	models               []string
 	timeout              time.Duration
+	shutdownTimeout      time.Duration
 	requestLogLimit      int
 	requestLogFile       string
 	requestLogMaxBytes   int64
@@ -128,11 +132,7 @@ func runServe(args []string) error {
 		if err != nil {
 			return err
 		}
-		defer func() {
-			if persist.file != nil {
-				_ = persist.file.Close()
-			}
-		}()
+		defer persist.close()
 		restored, maxID, err := persist.loadEntries(cfg.requestLogLimit)
 		if err != nil {
 			return fmt.Errorf("load persisted request log: %w", err)
@@ -158,7 +158,17 @@ func runServe(args []string) error {
 
 	mux := newServerMux(proxy)
 
-	log.Printf("codex-auth-broker listening on %s", cfg.listen)
+	stop, stopSignals := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stopSignals()
+	go func() {
+		<-stop.Done()
+		stopSignals() // A second signal uses the operating system's default action.
+	}()
+	listener, err := net.Listen("tcp", cfg.listen)
+	if err != nil {
+		return err
+	}
+	log.Printf("codex-auth-broker listening on %s", listener.Addr())
 	if len(cfg.authFiles) == 1 {
 		log.Printf("using Codex auth file %s", cfg.authFiles[0])
 	} else {
@@ -185,13 +195,14 @@ func runServe(args []string) error {
 		Handler:           mux,
 		ReadHeaderTimeout: 15 * time.Second,
 	}
-	return server.ListenAndServe()
+	return serveHTTP(stop, server, listener, cfg.shutdownTimeout)
 }
 
 func newServerMux(proxy *responsesProxy) *http.ServeMux {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /", proxy.handleDashboard)
 	mux.HandleFunc("GET /dashboard", proxy.handleDashboard)
+	mux.HandleFunc("GET /voice", proxy.handleVoice)
 	mux.HandleFunc("POST /dashboard/api/logout", proxy.handleDashboardLogout)
 	mux.HandleFunc("GET /dashboard/api/requests", proxy.handleDashboardRequests)
 	mux.HandleFunc("DELETE /dashboard/api/requests", proxy.handleDashboardRequests)
@@ -203,6 +214,16 @@ func newServerMux(proxy *responsesProxy) *http.ServeMux {
 	mux.HandleFunc("GET /v1/models", proxy.withClientAuthentication(proxy.handleModels))
 	mux.HandleFunc("GET /v1/responses", proxy.withClientAuthentication(proxy.handleResponsesWebSocket))
 	mux.HandleFunc("POST /v1/responses", proxy.withClientAuthentication(proxy.handleResponses))
+	mux.HandleFunc("POST /v1/responses/compact", proxy.withClientAuthentication(proxy.handleCompact))
+	mux.HandleFunc("GET /v1/capabilities", proxy.withClientAuthentication(proxy.handleCapabilities))
+	mux.HandleFunc("POST /v1/realtime/calls", proxy.withClientAuthentication(proxy.handleLiveCall))
+	mux.HandleFunc("POST /v1/live", proxy.withClientAuthentication(proxy.handleLiveCall))
+	mux.HandleFunc("GET /v1/live/{call_id}", proxy.withClientAuthentication(proxy.handleLiveWebSocket))
+	mux.HandleFunc("GET /v1/realtime", proxy.withClientAuthentication(proxy.handleLiveWebSocket))
+	mux.HandleFunc("POST /v1/realtime/calls/{call_id}/hangup", proxy.withClientAuthentication(proxy.handleUnsupportedCapability))
+	for _, path := range []string{"/v1/embeddings", "/v1/audio/transcriptions", "/v1/audio/translations", "/v1/audio/speech", "/v1/realtime/client_secrets", "/v1/realtime/sessions"} {
+		mux.HandleFunc("POST "+path, proxy.withClientAuthentication(proxy.handleUnsupportedCapability))
+	}
 	mux.HandleFunc("POST /v1/images/generations", proxy.withClientAuthentication(proxy.handleImageGenerations))
 	mux.HandleFunc("POST /v1/images/edits", proxy.withClientAuthentication(proxy.handleImageEdits))
 	mux.HandleFunc("GET /v1/codex/responses", proxy.withClientAuthentication(proxy.handleResponsesWebSocket))
@@ -263,6 +284,7 @@ func loadConfig(args []string) (config, error) {
 		refreshSkew:          defaultRefreshSkew,
 		models:               nil,
 		timeout:              defaultHTTPTimeout,
+		shutdownTimeout:      defaultShutdownTimeout,
 		requestLogLimit:      defaultRequestLogLimit,
 		requestLogFile:       defaultRequestLogFile(),
 		requestLogMaxBytes:   defaultRequestLogMaxBytes,
@@ -306,6 +328,7 @@ func loadConfig(args []string) (config, error) {
 	fs := flag.NewFlagSet("codex-auth-broker", flag.ContinueOnError)
 	skewValue := cfg.refreshSkew.String()
 	timeoutValue := cfg.timeout.String()
+	shutdownValue := envOr("CODEX_AUTH_BROKER_SHUTDOWN_TIMEOUT", cfg.shutdownTimeout.String())
 	modelsValue := strings.Join(cfg.models, ",")
 	authFilesValue := envOr("CODEX_AUTH_FILES", "")
 	fs.StringVar(&cfg.listen, "listen", cfg.listen, "listen address, for example 127.0.0.1:8317 or a Tailscale IP")
@@ -324,6 +347,7 @@ func loadConfig(args []string) (config, error) {
 	fs.StringVar(&modelsValue, "models", modelsValue, "comma-separated model ids to serve statically from /v1/models; empty proxies the live Codex model list")
 	fs.StringVar(&skewValue, "refresh-skew", skewValue, "refresh access token when it expires within this duration")
 	fs.StringVar(&timeoutValue, "timeout", timeoutValue, "upstream request timeout")
+	fs.StringVar(&shutdownValue, "shutdown-timeout", shutdownValue, "time to drain requests and WebSocket sessions on shutdown; 0 cancels immediately")
 	fs.IntVar(&cfg.requestLogLimit, "request-log-limit", cfg.requestLogLimit, "maximum in-memory dashboard request entries")
 	fs.IntVar(&cfg.maxConcurrent, "max-concurrent", cfg.maxConcurrent, "maximum simultaneous upstream Codex calls; excess requests queue up to 120s then get 429; 0 disables the cap")
 	fs.Int64Var(&cfg.requestLogMaxBytes, "request-log-max-bytes", cfg.requestLogMaxBytes, "maximum persisted request metadata bytes; 0 keeps unlimited history")
@@ -413,6 +437,13 @@ func loadConfig(args []string) (config, error) {
 	if cfg.timeout < 0 {
 		return cfg, errors.New("timeout must be zero or greater")
 	}
+	cfg.shutdownTimeout, err = time.ParseDuration(shutdownValue)
+	if err != nil {
+		return cfg, fmt.Errorf("invalid shutdown-timeout: %w", err)
+	}
+	if cfg.shutdownTimeout < 0 {
+		return cfg, errors.New("shutdown-timeout must be zero or greater")
+	}
 	if retention := strings.TrimSpace(cfg.promptCacheRetention); retention != "" && retention != "in_memory" && retention != "24h" {
 		return cfg, errors.New("prompt-cache-retention must be empty, in_memory, or 24h")
 	}
@@ -455,6 +486,7 @@ Common flags:
   --prompt-cache-key       Inject prompt_cache_key when clients omit it
   --prompt-cache-retention Record legacy retention intent; never forward it upstream
   --request-log-limit      In-memory dashboard request history size
+  --shutdown-timeout       Drain requests and WebSocket sessions on shutdown (default 30s)
   --request-log-max-bytes   Maximum persisted log bytes; 0 disables the cap
   --request-log-file       JSONL file for persistent request metadata; empty disables
   --max-concurrent         Cap on simultaneous upstream Codex calls (default 8; 0 = unlimited)

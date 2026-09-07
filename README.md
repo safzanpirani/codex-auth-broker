@@ -28,6 +28,10 @@ Codex account.
   - `GET /v1/models`
   - `GET /v1/responses` (Responses WebSocket upgrade)
   - `POST /v1/responses`
+  - `POST /v1/responses/compact`
+  - `GET /v1/capabilities`
+  - `POST /v1/realtime/calls` and `POST /v1/live` (experimental GPT-Live WebRTC)
+  - `GET /v1/live/{call_id}` (native GPT-Live control WebSocket)
   - `POST /v1/images/generations`
   - `POST /v1/images/edits`
   - `GET` / `POST /v1/codex/responses` (Pi Codex transport alias)
@@ -47,6 +51,11 @@ Codex account.
 - Optionally pools several Codex accounts and fails over when one hits a rolling
   usage limit (the ~5-hour or weekly window). See [Multi-Account Failover](#multi-account-failover).
 - Never returns a refresh token to Pi, Factory Droid, or remote clients.
+
+See [Subscription capabilities](docs/capabilities.md) for GPT-Live voice,
+image generation/editing, compaction, and the supported API shapes. The voice
+demo is at `/voice`. Embeddings and file-audio APIs have no verified Codex
+subscription route and return a structured unsupported-endpoint error.
 
 ## Why This Exists
 
@@ -475,6 +484,17 @@ not live at `/usr/local/bin/codex-auth-broker`.
 
 More detail: `docs/linux-systemd.md`.
 
+### Graceful shutdown
+
+On Ctrl-C or SIGTERM, the broker stops accepting new requests and waits up to
+30 seconds for admitted requests and WebSocket sessions to finish. Set
+`--shutdown-timeout` / `CODEX_AUTH_BROKER_SHUTDOWN_TIMEOUT` to change that period;
+`0` cancels immediately. At the deadline it cancels remaining upstream work and
+closes connections, with up to five additional seconds for handler cleanup and
+request metadata recording. Interrupted requests can still require a client retry.
+A second signal terminates immediately. The systemd unit allows 40 seconds for
+the default shutdown; increase `TimeoutStopSec` if you configure a longer drain.
+
 ## Configuration
 
 Flags and equivalent environment variables:
@@ -482,6 +502,7 @@ Flags and equivalent environment variables:
 | Flag | Environment | Default |
 | --- | --- | --- |
 | `--listen` | `CODEX_AUTH_BROKER_LISTEN` | `127.0.0.1:8317` |
+| `--shutdown-timeout` | `CODEX_AUTH_BROKER_SHUTDOWN_TIMEOUT` | `30s`; `0` cancels immediately |
 | `--auth-file` | `CODEX_AUTH_FILE` | `~/.codex/auth.json` |
 | `--auth-files` | `CODEX_AUTH_FILES` | empty; comma-separated pool for [multi-account failover](#multi-account-failover) (overrides `--auth-file`) |
 | `--api-key` | `CODEX_AUTH_BROKER_API_KEY` | empty |
@@ -559,11 +580,16 @@ falls back on the response wording — "weekly" → 7 days, a usage/5-hour limit
 **When every account is cooling down.** The broker returns `429` with a
 `Retry-After` header pointing at the soonest reset across the pool.
 
-For WebSockets, account selection is pinned for the life of a connection. A
+For Responses WebSockets, account selection is pinned for the life of a connection. A
 `429` during the opening handshake rotates transparently. A `429` event after
 the socket is established is forwarded to the client, the account is cooled,
 and the socket is closed so a reconnect can select the next account; an
 in-flight turn is never replayed automatically across accounts.
+
+GPT-Live call creation and native compaction rotate after an explicit `429`.
+Transport failures are not replayed. Each created voice call and its control
+WebSocket remain pinned to the original account; reconnecting the control
+socket does not select another account. See [Subscription capabilities](docs/capabilities.md).
 
 **Observability.** `/healthz` reports aggregate account availability;
 `doctor --auth-files ...` validates every login; and each rotation

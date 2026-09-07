@@ -102,6 +102,13 @@ that account, and closes the socket so the client's reconnect selects another
 account. It does not replay the in-flight `response.create` across accounts,
 because response IDs and turn state may not be portable between accounts.
 
+GPT-Live call creation and native compaction also rotate after an explicit
+`429`; transport failures are never replayed. A created voice call and its
+control WebSocket remain pinned to the account that created the call, even
+when that account subsequently enters cooldown. Reconnecting the control
+socket cannot move the call to another account. Create a new WebRTC call to
+select an available account. See [Subscription capabilities](capabilities.md).
+
 **Cooldown deadline.** The bench time prefers an explicit reset from the `429`,
 in this order:
 

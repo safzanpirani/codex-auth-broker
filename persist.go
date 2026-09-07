@@ -37,6 +37,17 @@ func openRequestLogFile(path string) (*requestLogFile, error) {
 	return openRequestLogFileWithLimit(path, defaultRequestLogMaxBytes)
 }
 
+// Serialize closing with any handler that outlives the forced cleanup budget.
+func (f *requestLogFile) close() {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.file != nil {
+		_ = f.file.Sync()
+		_ = f.file.Close()
+		f.file = nil
+	}
+}
+
 func openRequestLogFileWithLimit(path string, maxBytes int64) (*requestLogFile, error) {
 	if maxBytes < 0 {
 		return nil, fmt.Errorf("request log size limit must be nonnegative")

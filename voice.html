@@ -1,0 +1,63 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>GPT-Live · Codex Auth Broker</title>
+<style>
+:root{color-scheme:dark;font:16px/1.6 system-ui,sans-serif;background:#101315;color:#edf0ee}
+body{max-width:660px;margin:8vh auto;padding:0 24px}a{color:#a8d9c1}h1{font-size:2.8rem;line-height:1.15;letter-spacing:-.04em;margin:.5em 0}p{color:#b9c3bf}.eyebrow{font-size:.8rem;letter-spacing:.13em;text-transform:uppercase;color:#9ec8b3}
+label{display:block;margin-top:24px;font-weight:600}input{box-sizing:border-box;width:100%;margin:8px 0;padding:13px;border:1px solid #46534c;background:#191f1c;color:inherit;border-radius:8px;font:inherit}input:focus-visible,button:focus-visible,a:focus-visible{outline:2px solid #c3f5d8;outline-offset:3px}
+button{font:inherit;font-weight:600;border:0;border-radius:8px;padding:12px 20px;background:#b9edcf;color:#13231b;cursor:pointer}button:disabled{opacity:.45;cursor:default}#stop{background:#303a35;color:#edf0ee;margin-left:8px}.panel{padding:22px 0;margin-top:28px;border-top:1px solid #354139}#status{font-size:1.15rem;margin:0;color:#edf0ee;overflow-wrap:anywhere}.detail{font-size:.88rem;color:#99aaa1}#events{font-family:ui-monospace,monospace;overflow-wrap:anywhere;min-height:3em}footer{margin-top:40px;font-size:.85rem;color:#99aaa1}audio{display:none}audio[controls]{display:block;margin-top:16px;width:100%}
+</style>
+<main>
+<a href="/dashboard">← Dashboard</a>
+<p class="eyebrow">Codex Auth Broker · Experimental</p>
+<h1>Talk with GPT-Live.</h1>
+<p>A short voice conversation through your Codex login. Your account needs access to GPT-Live. Audio travels over WebRTC; the broker keeps your OAuth credentials local.</p>
+<label for="key">Broker key</label>
+<input id="key" type="password" autocomplete="off" spellcheck="false" placeholder="Leave empty if client authentication is disabled">
+<p class="detail">The key stays in this page's memory. Microphone access requires localhost or HTTPS.</p>
+<button id="start" type="button">Connect microphone</button><button id="stop" type="button" disabled>Disconnect</button>
+<section class="panel" aria-live="polite"><p id="status">Ready to connect</p><p id="events" class="detail">gpt-live-1-codex · native conversation events</p></section>
+<audio id="output" autoplay></audio>
+<footer>No transcripts or recordings are saved by this page. GPT-Live uses a different event protocol from the GA Realtime API. A 403 can indicate an upstream access challenge or unavailable account access.</footer>
+</main>
+<script>
+'use strict';
+const key=document.getElementById('key'),start=document.getElementById('start'),stop=document.getElementById('stop'),status=document.getElementById('status'),events=document.getElementById('events'),output=document.getElementById('output');
+let active=null;
+function end(message){
+ const session=active;active=null;
+ if(session){session.abort.abort();session.pc.close();if(session.stream)session.stream.getTracks().forEach(track=>track.stop());}
+ output.srcObject=null;output.controls=false;start.disabled=false;stop.disabled=true;key.disabled=false;
+ status.textContent=message;
+}
+stop.addEventListener('click',()=>end('Disconnected'));
+window.addEventListener('pagehide',()=>end('Disconnected'));
+start.addEventListener('click',async()=>{
+ if(active)return;
+ if(!window.isSecureContext||!navigator.mediaDevices){status.textContent='Open this page on localhost or HTTPS to use the microphone.';return;}
+ const session={pc:new RTCPeerConnection(),stream:null,abort:new AbortController()};active=session;
+ start.disabled=true;stop.disabled=false;key.disabled=true;status.textContent='Waiting for microphone permission…';events.textContent='';
+ const stillActive=()=>active===session;
+ try{
+  const stream=await navigator.mediaDevices.getUserMedia({audio:true});
+  if(!stillActive()){stream.getTracks().forEach(track=>track.stop());return;}
+  session.stream=stream;stream.getTracks().forEach(track=>session.pc.addTrack(track,stream));
+  session.pc.ontrack=event=>{if(stillActive()){output.srcObject=event.streams[0]||new MediaStream([event.track]);output.play().catch(()=>{if(stillActive()){output.controls=true;status.textContent='Connected. Press play below to hear audio.';}});}};
+  session.pc.onconnectionstatechange=()=>{if(!stillActive())return;const state=session.pc.connectionState;if(state==='failed'||state==='closed'){end('Connection ended. You can connect again.');}else{status.textContent=state==='connected'?'Connected — speak when you’re ready.':'Connection: '+state;}};
+  const channel=session.pc.createDataChannel('oai-events');let eventCount=0;
+  channel.onmessage=event=>{if(!stillActive())return;try{const data=JSON.parse(event.data);if(typeof data.type==='string'){eventCount++;events.textContent=eventCount+' events · '+data.type.slice(0,120);}}catch{}};
+  await session.pc.setLocalDescription(await session.pc.createOffer());if(!stillActive())return;
+  const form=new FormData();form.set('sdp',session.pc.localDescription.sdp);form.set('session',JSON.stringify({type:'realtime',model:'gpt-live-1-codex',instructions:'Have a brief, helpful voice conversation.',audio:{output:{voice:'marin'}}}));
+  status.textContent='Creating a voice call…';
+  const headers={};if(key.value.trim())headers.Authorization='Bearer '+key.value.trim();
+  const response=await fetch('/v1/realtime/calls',{method:'POST',headers,body:form,signal:session.abort.signal});
+  if(!stillActive())return;
+  if(!response.ok){let message='Call rejected (HTTP '+response.status+').';try{const data=await response.json();if(typeof data.error?.message==='string')message=data.error.message;}catch{}if(stillActive())end(message);return;}
+  const answer=await response.text();if(!stillActive())return;
+  await session.pc.setRemoteDescription({type:'answer',sdp:answer});
+ }catch(error){if(stillActive())end(error.name==='NotAllowedError'?'Microphone permission was denied. Allow access and try again.':'Could not connect. Check your connection and try again.');}
+});
+</script>
+</html>

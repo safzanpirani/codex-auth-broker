@@ -36,6 +36,14 @@ journalctl --user -u codex-auth-broker.service -f
 curl -fsS http://127.0.0.1:8317/healthz
 ```
 
+Stopping or restarting the service sends SIGTERM. The broker closes its listener
+and drains admitted HTTP requests and WebSocket sessions for up to 30 seconds,
+then cancels remaining work and allows five seconds for cleanup. The bundled
+unit sets `TimeoutStopSec=40`. If you increase
+`CODEX_AUTH_BROKER_SHUTDOWN_TIMEOUT`, also increase `TimeoutStopSec` beyond that
+duration plus the cleanup allowance. Reinstall the unit or update its override
+and run `systemctl --user daemon-reload` to apply unit changes.
+
 ## Remote Access
 
 Prefer Tailscale:
