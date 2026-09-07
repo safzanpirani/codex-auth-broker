@@ -9,6 +9,8 @@ import (
 	"time"
 )
 
+const maxAlphaSearchResponseBytes = 16 * 1024 * 1024
+
 // handleAlphaSearch proxies POST /v1/alpha/search to the Codex standalone
 // search backend (web.run without a GPT inference turn). The broker injects
 // the stored ChatGPT OAuth access token and account id, exactly as it does for
@@ -78,11 +80,20 @@ func (p *responsesProxy) handleAlphaSearch(w http.ResponseWriter, r *http.Reques
 		return
 	}
 	defer resp.Body.Close()
-	body, _ := io.ReadAll(io.LimitReader(resp.Body, 16*1024*1024))
 	logEntry.markUpstreamStatus(resp.StatusCode)
+	body, err := io.ReadAll(io.LimitReader(resp.Body, maxAlphaSearchResponseBytes+1))
+	if err != nil || len(body) > maxAlphaSearchResponseBytes {
+		message := "upstream search response incomplete or too large"
+		logEntry.markError(http.StatusBadGateway, message)
+		writeProxyError(w, http.StatusBadGateway, message)
+		return
+	}
 	logEntry.markStatus(resp.StatusCode)
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		log.Printf("alpha/search upstream returned %d: %s", resp.StatusCode, summarizeUpstreamError(body, resp.StatusCode))
+		summary := summarizeUpstreamError(body, resp.StatusCode)
+		logEntry.markError(resp.StatusCode, summary)
+		log.Printf("alpha/search upstream returned %d: %s", resp.StatusCode, summary)
+		body = []byte(redactTokenLikeText(string(body)))
 	}
 
 	contentType := resp.Header.Get("Content-Type")
@@ -93,5 +104,5 @@ func (p *responsesProxy) handleAlphaSearch(w http.ResponseWriter, r *http.Reques
 	}
 	w.Header().Set("Content-Type", contentType)
 	w.WriteHeader(resp.StatusCode)
-	_, _ = w.Write([]byte(redactTokenLikeText(string(body))))
+	_, _ = w.Write(body)
 }

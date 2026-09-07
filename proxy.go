@@ -1,7 +1,6 @@
 package main
 
 import (
-	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -264,6 +263,12 @@ func (p *responsesProxy) handleResponses(w http.ResponseWriter, r *http.Request)
 			writeProxyError(w, http.StatusBadGateway, "aggregate upstream stream failed: "+err.Error())
 			return
 		}
+		switch stringField(finalResponse, "status") {
+		case "failed":
+			logEntry.markStreamError("upstream response failed")
+		case "incomplete":
+			logEntry.markStreamError("upstream response incomplete")
+		}
 		logEntry.markUsage(logUsage(finalResponse))
 		recordAppliedServiceTier(logEntry, info.ServiceTier, extractServiceTier(finalResponse))
 		logEntry.markStatus(http.StatusOK)
@@ -273,8 +278,11 @@ func (p *responsesProxy) handleResponses(w http.ResponseWriter, r *http.Request)
 	logEntry.markStatus(resp.StatusCode)
 	copyResponseHeaders(w, resp.Header, true)
 	w.WriteHeader(resp.StatusCode)
-	usage, appliedTier := copyStreamingResponse(w, resp.Body)
+	usage, appliedTier, streamErr := copyStreamingResponse(w, resp.Body)
 	logEntry.markUsage(usage)
+	if streamErr != nil {
+		logEntry.markStreamError(streamErr.Error())
+	}
 	recordAppliedServiceTier(logEntry, info.ServiceTier, appliedTier)
 }
 
@@ -291,12 +299,18 @@ func (p *responsesProxy) dispatchUpstream(ctx context.Context, encoded []byte, i
 	var lastRateLimit *dispatchFailure
 	var lastAuthErr error
 	for attempt := 0; attempt < n; attempt++ {
+		if ctx.Err() != nil {
+			return nil, &dispatchFailure{status: http.StatusRequestTimeout, message: "request canceled"}
+		}
 		acct, err := p.pool.pick(time.Now())
 		if err != nil {
 			break // every account is cooling down
 		}
 		access, err := acct.mgr.current(ctx)
 		if err != nil {
+			if ctx.Err() != nil {
+				return nil, &dispatchFailure{status: http.StatusRequestTimeout, message: "request canceled"}
+			}
 			acct.cool(time.Now().Add(authErrorCooldown), "auth error: "+err.Error())
 			lastAuthErr = err
 			log.Printf("codex account %s auth failed: %v; rotating", acct.label, err)
@@ -380,7 +394,7 @@ func (p *responsesProxy) writeDispatchFailure(w http.ResponseWriter, logEntry *p
 	if len(bytes.TrimSpace(fail.body)) > 0 {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(fail.status)
-		_, _ = w.Write([]byte(redactTokenLikeText(string(fail.body))))
+		_, _ = w.Write(normalizeUpstreamErrorBody(fail.body, fail.status))
 		return
 	}
 	writeProxyError(w, fail.status, valueOr(detail, fmt.Sprintf("upstream returned %d", fail.status)))
@@ -457,7 +471,7 @@ func normalizeResponsesBody(body map[string]any, cfg config, r *http.Request) re
 	// Capture the conversation-stable key candidate before removeUnsupportedParams
 	// strips the session/conversation id fields (the backend 400s on them).
 	stableKey := stablePromptCacheKey(r, body)
-	removeUnsupportedParams(body)
+	removeUnsupportedParams(body, info.NormalizedModel)
 	normalizeInput(body)
 	info.CompactionTrigger = hasCompactionTrigger(body)
 	// Only supply a placeholder when the request carries no prompt at all. A
@@ -528,9 +542,11 @@ func normalizeFactoryModel(raw string) (string, string) {
 		}
 	}
 	lower := strings.ToLower(model)
-	for _, suffix := range []string{"-ultra", "-xhigh", "-high", "-medium", "-low", "-max"} {
+	for _, suffix := range []string{"-non-reasoning", "-ultra", "-xhigh", "-high", "-medium", "-low", "-max"} {
 		if strings.HasSuffix(lower, suffix) {
-			effort = normalizeReasoningEffort(strings.TrimPrefix(suffix, "-"))
+			if suffix != "-non-reasoning" {
+				effort = normalizeReasoningEffort(strings.TrimPrefix(suffix, "-"))
+			}
 			model = strings.TrimSpace(model[:len(model)-len(suffix)])
 			break
 		}
@@ -640,7 +656,7 @@ func normalizeReasoningEffort(value string) string {
 	case "low", "medium", "high", "xhigh", "max":
 		return strings.ToLower(strings.TrimSpace(value))
 	case "ultra":
-		// The Codex catalog advertises "ultra" on gpt-5.6 models, but the
+		// The Codex catalog advertises "ultra" on newer reasoning models, but the
 		// responses endpoint rejects it on the wire — it is a client-side
 		// delegation mode layered on top of "max".
 		return "max"
@@ -729,8 +745,7 @@ func normalizeServiceTier(body map[string]any) string {
 func normalizeInput(body map[string]any) {
 	switch input := body["input"].(type) {
 	case string:
-		text := strings.TrimSpace(input)
-		if text == "" {
+		if input == "" {
 			body["input"] = []any{}
 			return
 		}
@@ -738,7 +753,7 @@ func normalizeInput(body map[string]any) {
 			map[string]any{
 				"role": "user",
 				"content": []any{
-					map[string]any{"type": "input_text", "text": text},
+					map[string]any{"type": "input_text", "text": input},
 				},
 			},
 		}
@@ -817,7 +832,7 @@ func codexBetaFeatures(r *http.Request, compaction bool) string {
 	return strings.TrimSpace(value)
 }
 
-func removeUnsupportedParams(body map[string]any) {
+func removeUnsupportedParams(body map[string]any, model string) {
 	delete(body, "max_tokens")
 	delete(body, "max_output_tokens")
 	delete(body, "max_completion_tokens")
@@ -826,7 +841,13 @@ func removeUnsupportedParams(body map[string]any) {
 	delete(body, "maxCompletionTokens")
 	delete(body, "prompt_cache_retention")
 	delete(body, "promptCacheRetention")
-	delete(body, "prompt_cache_options")
+	if model != "gpt-6-astra" {
+		delete(body, "prompt_cache_options")
+	} else if _, exists := body["prompt_cache_options"]; !exists {
+		if options, ok := body["promptCacheOptions"]; ok {
+			body["prompt_cache_options"] = options
+		}
+	}
 	delete(body, "promptCacheOptions")
 	// session/conversation ids are captured for prompt_cache_key derivation, but
 	// the Codex backend 400s on them ("Unsupported parameter: conversation_id").
@@ -907,26 +928,24 @@ type indexedItem struct {
 }
 
 func aggregateResponsesSSE(r io.Reader) (map[string]any, error) {
-	scanner := bufio.NewScanner(r)
-	scanner.Buffer(make([]byte, 64*1024), maxRequestBodyBytes)
-	var dataLines []string
 	var final map[string]any
 	var items []indexedItem
-	flush := func() error {
-		if len(dataLines) == 0 {
-			return nil
-		}
-		data := strings.TrimSpace(strings.Join(dataLines, "\n"))
-		dataLines = nil
-		if data == "" || data == "[DONE]" {
+	var retainedBytes int
+	err := readSSE(r, maxRequestBodyBytes, func(data []byte) error {
+		data = bytes.TrimSpace(data)
+		if len(data) == 0 || bytes.Equal(data, []byte("[DONE]")) {
 			return nil
 		}
 		var event map[string]any
-		if err := json.Unmarshal([]byte(data), &event); err != nil {
-			return err
+		if json.Unmarshal(data, &event) != nil {
+			return errors.New("malformed upstream SSE event")
 		}
 		switch event["type"] {
 		case "response.output_item.done":
+			retainedBytes += len(data)
+			if retainedBytes > maxRequestBodyBytes {
+				return errors.New("upstream response output exceeds size limit")
+			}
 			if item, ok := event["item"].(map[string]any); ok {
 				index := 0
 				if value, ok := numericField(event, "output_index"); ok {
@@ -934,43 +953,29 @@ func aggregateResponsesSSE(r io.Reader) (map[string]any, error) {
 				}
 				items = append(items, indexedItem{index: index, item: item})
 			}
-		case "response.completed", "response.done", "response.incomplete":
+		case "response.completed", "response.done", "response.incomplete", "response.failed":
 			if response, ok := event["response"].(map[string]any); ok {
 				final = response
+				return errSSEComplete
 			}
-		case "response.failed":
-			if response, ok := event["response"].(map[string]any); ok {
-				final = response
-			}
+			return errors.New("upstream terminal event missing response")
 		case "error":
-			return fmt.Errorf("%v", event)
+			return errors.New("upstream stream failed")
 		}
 		return nil
-	}
-	for scanner.Scan() {
-		line := strings.TrimRight(scanner.Text(), "\r")
-		if line == "" {
-			if err := flush(); err != nil {
-				return nil, err
-			}
-			continue
-		}
-		if strings.HasPrefix(line, "data:") {
-			dataLines = append(dataLines, strings.TrimSpace(strings.TrimPrefix(line, "data:")))
-		}
-	}
-	if err := scanner.Err(); err != nil {
-		return nil, err
-	}
-	if err := flush(); err != nil {
+	})
+	if err != nil {
 		return nil, err
 	}
 	if final == nil {
 		return nil, errors.New("upstream stream did not include a final response")
 	}
-	if len(items) > 0 {
+	// Nonempty final output is authoritative. Done items are a fallback for
+	// backends that omit output or send an empty terminal output array.
+	output, _ := final["output"].([]any)
+	if len(output) == 0 && len(items) > 0 {
 		sort.SliceStable(items, func(i, j int) bool { return items[i].index < items[j].index })
-		output := make([]any, 0, len(items))
+		output = make([]any, 0, len(items))
 		for _, item := range items {
 			output = append(output, item.item)
 		}
@@ -1134,55 +1139,41 @@ func safeErrorAttribute(value any) string {
 }
 
 type sseUsageTracker struct {
-	pending     string
-	dataLines   []string
+	framer      *sseFramer
 	usage       tokenUsage
 	serviceTier string
+	terminal    bool
+	err         error
 }
 
 func (t *sseUsageTracker) feed(chunk []byte) {
-	t.pending += string(chunk)
-	for {
-		index := strings.IndexByte(t.pending, '\n')
-		if index < 0 {
-			return
-		}
-		line := strings.TrimRight(t.pending[:index], "\r")
-		t.pending = t.pending[index+1:]
-		t.consumeLine(line)
+	if t.err != nil || t.terminal {
+		return
 	}
+	if t.framer == nil {
+		t.framer = &sseFramer{limit: maxRequestBodyBytes, consume: t.consume}
+	}
+	t.err = t.framer.feed(chunk)
 }
 
 func (t *sseUsageTracker) finish() tokenUsage {
-	if strings.TrimSpace(t.pending) != "" {
-		t.consumeLine(strings.TrimRight(t.pending, "\r"))
+	if t.framer != nil && t.err == nil && !t.terminal {
+		t.err = t.framer.finish()
 	}
-	t.flush()
 	return t.usage
 }
 
-func (t *sseUsageTracker) consumeLine(line string) {
-	if line == "" {
-		t.flush()
-		return
+func (t *sseUsageTracker) consume(data []byte) error {
+	if t.terminal {
+		return nil
 	}
-	if strings.HasPrefix(line, "data:") {
-		t.dataLines = append(t.dataLines, strings.TrimSpace(strings.TrimPrefix(line, "data:")))
-	}
-}
-
-func (t *sseUsageTracker) flush() {
-	if len(t.dataLines) == 0 {
-		return
-	}
-	data := strings.TrimSpace(strings.Join(t.dataLines, "\n"))
-	t.dataLines = nil
-	if data == "" || data == "[DONE]" {
-		return
+	data = bytes.TrimSpace(data)
+	if len(data) == 0 || bytes.Equal(data, []byte("[DONE]")) {
+		return nil
 	}
 	var event map[string]any
-	if err := json.Unmarshal([]byte(data), &event); err != nil {
-		return
+	if json.Unmarshal(data, &event) != nil {
+		return errors.New("malformed upstream SSE event")
 	}
 	if response, ok := event["response"].(map[string]any); ok {
 		if usage := extractTokenUsage(response); usage.hasAny() {
@@ -1192,6 +1183,17 @@ func (t *sseUsageTracker) flush() {
 			t.serviceTier = tier
 		}
 	}
+	switch stringField(event, "type") {
+	case "response.completed", "response.done":
+		t.terminal = true
+	case "response.incomplete":
+		t.terminal = true
+		return errors.New("upstream response incomplete")
+	case "response.failed", "error":
+		t.terminal = true
+		return errors.New("upstream stream failed")
+	}
+	return nil
 }
 
 func (u tokenUsage) hasAny() bool {
@@ -1199,23 +1201,42 @@ func (u tokenUsage) hasAny() bool {
 		u.CacheWriteTokens != nil || u.ReasoningTokens != nil || u.TotalTokens != nil
 }
 
-func copyStreamingResponse(w http.ResponseWriter, r io.Reader) (tokenUsage, string) {
+func copyStreamingResponse(w http.ResponseWriter, r io.Reader) (tokenUsage, string, error) {
 	buf := make([]byte, 32*1024)
 	flusher, _ := w.(http.Flusher)
 	tracker := &sseUsageTracker{}
+	finish := func(err error) (tokenUsage, string, error) {
+		usage := tracker.finish()
+		if tracker.err != nil {
+			err = tracker.err
+		}
+		if err == nil && !tracker.terminal {
+			err = errors.New("upstream stream ended without a terminal response event")
+		}
+		return usage, tracker.serviceTier, err
+	}
 	for {
 		n, readErr := r.Read(buf)
 		if n > 0 {
 			tracker.feed(buf[:n])
-			if _, writeErr := w.Write(buf[:n]); writeErr != nil {
-				return tracker.finish(), tracker.serviceTier
+			if _, err := w.Write(buf[:n]); err != nil {
+				return finish(errors.New("client stream write failed"))
 			}
 			if flusher != nil {
 				flusher.Flush()
 			}
+			if tracker.err != nil {
+				return finish(tracker.err)
+			}
+			if tracker.terminal {
+				return finish(nil)
+			}
 		}
 		if readErr != nil {
-			return tracker.finish(), tracker.serviceTier
+			if !errors.Is(readErr, io.EOF) {
+				return finish(errors.New("upstream stream read failed"))
+			}
+			return finish(nil)
 		}
 	}
 }

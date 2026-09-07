@@ -60,16 +60,25 @@ type tokenResponse struct {
 }
 
 func (m *authManager) current(ctx context.Context) (accessMaterial, error) {
+	if err := ctx.Err(); err != nil {
+		return accessMaterial{}, err
+	}
 	// The file lock coordinates broker processes on platforms that support it.
 	// The mutex also serializes refreshes inside this process on every platform.
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	if err := ctx.Err(); err != nil {
+		return accessMaterial{}, err
+	}
 
 	unlock, err := lockFile(m.authFile + ".lock")
 	if err != nil {
 		return accessMaterial{}, err
 	}
 	defer unlock()
+	if err := ctx.Err(); err != nil {
+		return accessMaterial{}, err
+	}
 
 	doc, err := readAuthDocument(m.authFile)
 	if err != nil {

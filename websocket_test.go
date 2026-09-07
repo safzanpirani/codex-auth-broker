@@ -296,6 +296,18 @@ func TestWebSocketTurnTrackerRecordsFailedTerminalStatus(t *testing.T) {
 	}
 }
 
+func TestNormalizeWebSocketClientEventPreservesSteering(t *testing.T) {
+	proxy := &responsesProxy{}
+	payload := []byte(`{"type":"response.steer","previous_response_id":"resp_1","input":"change course"}`)
+	got, err := proxy.normalizeWebSocketClientEvent(payload, &webSocketTurnTracker{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != string(payload) {
+		t.Fatalf("steering event changed: %s", got)
+	}
+}
+
 func TestWebSocketTurnTrackerRecordsNormalCloseBeforeTerminalAsFailure(t *testing.T) {
 	store := newRequestLogStore(10)
 	proxy := &responsesProxy{requests: store}

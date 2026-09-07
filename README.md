@@ -83,6 +83,7 @@ http://127.0.0.1:8317/v1
 4. Use a Codex model in Factory:
 
 ```text
+gpt-6-astra(max)
 gpt-5.5(low)
 gpt-5.5(medium)
 gpt-5.5(high)
@@ -93,8 +94,8 @@ gpt-5.4-mini
 gpt-5.3-codex
 ```
 
-Effort suffixes accept `low`/`medium`/`high`/`xhigh`, plus `max` on the
-gpt-5.6 family (`ultra` is accepted as an alias and forwarded as `max`).
+Effort suffixes accept `low`/`medium`/`high`/`xhigh`, plus `max` on GPT-6 Astra
+and the gpt-5.6 family (`ultra` is accepted as an alias and forwarded as `max`).
 
 The API key can be any dummy value unless you start the broker with
 `--api-key`.
@@ -234,11 +235,11 @@ unset by default: with no key the backend hashes the prefix unscoped, which is
 strictly better than a colliding one. Set `--prompt-cache-key <value>` only when
 a fleet of otherwise-anonymous clients really should share one cache bucket.
 
-The public OpenAI Responses API exposes cache-retention controls. The ChatGPT
-Codex OAuth endpoint used by this broker applies its cache policy server-side
-and rejects both the legacy `prompt_cache_retention` field and the newer
-`prompt_cache_options` object. The broker therefore strips those controls and
-preserves `prompt_cache_key`.
+The broker strips the legacy `prompt_cache_retention` field. For GPT-6 Astra,
+the broker forwards `prompt_cache_options` so clients can request the current
+cache TTL. It strips that object for older models because the ChatGPT Codex
+OAuth endpoint rejects it. The broker preserves `prompt_cache_key` for every
+model.
 
 This does not disable extended caching. OpenAI documents GPT-5.5 and GPT-5.4 as
 supporting extended prompt retention for up to 24 hours; GPT-5.6 instead uses a
@@ -287,15 +288,18 @@ It shows:
   cached tokens, and total tokens. Streaming calls are scanned as they pass
   through so final usage is captured when the upstream SSE includes it.
 - A per-request estimated cost column plus an aggregate cost KPI. Costs are
-  API-equivalent estimates from the built-in pricing table (cached input is
-  priced at the discounted rate); ChatGPT-plan traffic is not actually billed
-  per token. Override prices with `CODEX_AUTH_BROKER_PRICING`, for example
+  shown as Codex usage estimates by default. The dashboard pricing dropdown can
+  switch to published live API-equivalent estimates. ChatGPT-plan traffic is
+  not actually billed per token. Override prices with
+  `CODEX_AUTH_BROKER_PRICING`, for example
   `{"gpt-5.5":{"input":5,"cached_input":0.5,"cache_write":5,"output":30}}`
-  (USD per 1M tokens). GPT-5.6 defaults price reported cache writes at 1.25x
-  uncached input, matching the public API-equivalent rate. GPT-5.6, GPT-5.5,
-  and GPT-5.4 requests above 272,000 input tokens apply the published premium
-  to the full request: 2x input and 1.5x output. Unit-rate overrides retain
-  this model policy.
+  (USD per 1M tokens). Reported cache writes use each model's regular input rate
+  because Codex does not apply the public API's cache-write multiplier.
+  GPT-5.6, GPT-5.5, and GPT-5.4 requests above
+  272,000 input tokens apply the published premium to the full request: 2x
+  input and 1.5x output. The broker does not apply that premium to GPT-6 Astra
+  Codex traffic. Fast mode uses the official 2x price multiplier. Unit-rate
+  overrides retain this model policy.
 - Filtering, pause/resume, manual refresh, and clear-history controls.
 
 The in-memory request log is bounded by `--request-log-limit`. Request
@@ -303,7 +307,21 @@ metadata is also appended as JSONL to `--request-log-file`
 (default `~/.codex-auth-broker/requests.jsonl`, mode 0600; pass an empty value
 to disable). On startup the broker reloads the tail of that file so dashboard
 history survives restarts. The clear-history button clears both memory and the
-persistent JSONL file.
+persistent JSONL file. The disk log is capped at 64 MiB by default. Set
+`--request-log-max-bytes` / `CODEX_AUTH_BROKER_REQUEST_LOG_MAX_BYTES` to change
+the cap, or `0` for unlimited retention. When the cap is reached, atomic
+compaction retains the newest complete entries and leaves room for new ones.
+The cap also applies when an existing log is opened. If compaction fails, the
+original file is preserved, reads stay bounded, and the dashboard shows a warning.
+Cost windows, including
+`all`, cover retained history; old entries removed by retention no longer count.
+All dashboard cost views use the current configured prices, including after a
+restart. If persistence fails, inference continues and the dashboard reports
+that history may be incomplete. Successful later writes do not erase that warning.
+
+The dashboard's **Sign out** control clears both its login cookie and any
+bearer key saved in browser session storage.
+
 Neither store ever contains prompt bodies, completion text, bearer tokens,
 access tokens, refresh tokens, or raw prompt cache keys. The stores retain a
 short SHA-256 cache-key fingerprint for correlation.
@@ -398,6 +416,7 @@ credential-generation, Tailscale, verification, and troubleshooting guide in
 Recommended model ids:
 
 ```text
+gpt-6-astra
 gpt-5.5
 gpt-5.4
 gpt-5.4-mini
@@ -474,6 +493,7 @@ Flags and equivalent environment variables:
 | `--models-url` | `CODEX_AUTH_BROKER_MODELS_URL` | ChatGPT Codex models endpoint |
 | n/a | `CODEX_AUTH_BROKER_MODELS_CLIENT_VERSION` | `2.0.0` (`client_version` sent to the Codex models endpoint) |
 | `--max-concurrent` | `CODEX_AUTH_BROKER_MAX_CONCURRENT` | `8`; cap on simultaneous upstream Codex calls, `0` = unlimited (see [Concurrency Cap](#concurrency-cap)) |
+| `--request-log-max-bytes` | `CODEX_AUTH_BROKER_REQUEST_LOG_MAX_BYTES` | `67108864` (64 MiB); `0` keeps unlimited history |
 | `--request-log-limit` | `CODEX_AUTH_BROKER_REQUEST_LOG_LIMIT` | `1000` |
 | `--request-log-file` | `CODEX_AUTH_BROKER_REQUEST_LOG_FILE` | `~/.codex-auth-broker/requests.jsonl` (empty disables) |
 | n/a | `CODEX_AUTH_BROKER_PRICING` | built-in per-model USD/1M-token table |
@@ -618,3 +638,10 @@ injecting the stored OAuth access token and account id. Gated by the same API ke
 and concurrency semaphore as `/v1/responses`. Override the upstream with
 `--alpha-search-url` / `CODEX_AUTH_BROKER_ALPHA_SEARCH_URL`. One command action
 type per request; upstream Cloudflare 403s are passed through.
+
+### Dashboard development checks
+
+The dashboard is embedded from `dashboard.html` with Go's `embed` support;
+serving or building the broker requires no frontend build or JavaScript runtime.
+When Node.js is available, `go test ./...` also runs dashboard behavior checks.
+Run them directly with `node --test scripts/dashboard.test.cjs`.

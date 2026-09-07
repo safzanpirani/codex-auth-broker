@@ -33,6 +33,56 @@ func TestLoadConfigUsesBrokerAPIKey(t *testing.T) {
 	}
 }
 
+func TestRequestLogEnvironmentAndFlagPrecedence(t *testing.T) {
+	t.Setenv("CODEX_AUTH_BROKER_REQUEST_LOG_FILE", "saved-original")
+	if err := os.Unsetenv("CODEX_AUTH_BROKER_REQUEST_LOG_FILE"); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := loadConfig(nil)
+	if err != nil || cfg.requestLogFile != defaultRequestLogFile() {
+		t.Fatalf("unset log setting did not use default: %v", err)
+	}
+	for _, test := range []struct {
+		env  string
+		args []string
+		want string
+	}{
+		{env: "", want: ""},
+		{env: "custom.jsonl", want: "custom.jsonl"},
+		{env: "custom.jsonl", args: []string{"--request-log-file", ""}, want: ""},
+		{env: "", args: []string{"--request-log-file", "flag.jsonl"}, want: "flag.jsonl"},
+	} {
+		t.Setenv("CODEX_AUTH_BROKER_REQUEST_LOG_FILE", test.env)
+		cfg, err := loadConfig(test.args)
+		if err != nil || cfg.requestLogFile != test.want {
+			t.Fatalf("log path = %q, want %q; error=%v", cfg.requestLogFile, test.want, err)
+		}
+	}
+}
+
+func TestRequestLogByteLimitConfiguration(t *testing.T) {
+	t.Setenv("CODEX_AUTH_BROKER_REQUEST_LOG_MAX_BYTES", "")
+	cfg, err := loadConfig(nil)
+	if err != nil || cfg.requestLogMaxBytes != defaultRequestLogMaxBytes {
+		t.Fatalf("default log cap = %d, error=%v", cfg.requestLogMaxBytes, err)
+	}
+	t.Setenv("CODEX_AUTH_BROKER_REQUEST_LOG_MAX_BYTES", "4096")
+	cfg, err = loadConfig(nil)
+	if err != nil || cfg.requestLogMaxBytes != 4096 {
+		t.Fatalf("environment log cap = %d, error=%v", cfg.requestLogMaxBytes, err)
+	}
+	cfg, err = loadConfig([]string{"--request-log-max-bytes", "0"})
+	if err != nil || cfg.requestLogMaxBytes != 0 {
+		t.Fatalf("explicit unlimited log cap = %d, error=%v", cfg.requestLogMaxBytes, err)
+	}
+	for _, value := range []string{"-1", "not-an-integer"} {
+		t.Setenv("CODEX_AUTH_BROKER_REQUEST_LOG_MAX_BYTES", value)
+		if _, err := loadConfig(nil); err == nil {
+			t.Fatalf("accepted invalid log cap %q", value)
+		}
+	}
+}
+
 func TestLoadConfigExplicitAPIKeyFileOverridesEnvironmentKey(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "client.key")
 	if err := os.WriteFile(path, []byte("file-key\n"), 0o600); err != nil {

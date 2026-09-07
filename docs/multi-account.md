@@ -57,8 +57,9 @@ CODEX_AUTH_FILES=~/.codex/auth.json,~/.codex-2/auth.json ./codex-auth-broker ser
 ```
 
 `--auth-files` overrides `--auth-file`. With a single entry it behaves exactly
-like `--auth-file`, so single-account setups need no change. Duplicate paths are
-collapsed. List order is the failover order.
+like `--auth-file`, so single-account setups need no change. Duplicate paths,
+including aliases that resolve to the same file, are rejected. List order is
+the failover order.
 
 ### Systemd `EnvironmentFile` pattern
 
@@ -165,8 +166,8 @@ codex account .codex-2 hit rate limit window=5h source=retry-after cooling_until
 where the reset came from (`retry-after`, `header:<name>`, `body:<field>`, or
 `default`). The first time an account actually hits a limit, check this line: if
 `source=default` the `429` carried no machine-readable reset and the fallback
-guess was used — the raw body is also logged (redacted) so you can see the real
-field names and tighten the parser if needed.
+guess was used. The log records `cooling_until`, `window`, and `source`; it does
+not record the raw response body.
 
 ## Troubleshooting
 
@@ -175,10 +176,11 @@ field names and tighten the parser if needed.
   pick a different account.
 - **`CODEX_HOME points to "..." but that path does not exist`.** `codex login`
   does not create the home directory. `mkdir -p` it first.
-- **An account never rotates back in.** Rotation back is automatic once the
-  cooldown passes. Check `/healthz` for `cooldown_seconds`; if it looks far too
-  long, the `429` likely carried a misparsed reset — see the logged `source` and
-  raw body.
+- **An account never rotates back in.** An account becomes eligible once its
+  cooldown passes. Selection remains sticky on the active account until another
+  rotation is needed. Check `/healthz` for aggregate `accounts_available` and
+  the rotation log for that account's `cooling_until`, `window`, and `source`.
+  If the deadline looks far too long, the reset may have been misparsed.
 - **All accounts cooling down at once.** Expected when every account's window is
   exhausted. The `Retry-After` on the `429` tells you when the first one frees
   up. Add another account to widen the pool.

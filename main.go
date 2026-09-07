@@ -71,6 +71,7 @@ type config struct {
 	timeout              time.Duration
 	requestLogLimit      int
 	requestLogFile       string
+	requestLogMaxBytes   int64
 	maxConcurrent        int
 }
 
@@ -123,15 +124,20 @@ func runServe(args []string) error {
 	requests := newRequestLogStore(cfg.requestLogLimit)
 	requests.pricing = pricing
 	if path := strings.TrimSpace(cfg.requestLogFile); path != "" && cfg.requestLogLimit > 0 {
-		restored, maxID, err := loadPersistedEntries(path, cfg.requestLogLimit)
+		persist, err := openRequestLogFileWithLimit(path, cfg.requestLogMaxBytes)
+		if err != nil {
+			return err
+		}
+		defer func() {
+			if persist.file != nil {
+				_ = persist.file.Close()
+			}
+		}()
+		restored, maxID, err := persist.loadEntries(cfg.requestLogLimit)
 		if err != nil {
 			return fmt.Errorf("load persisted request log: %w", err)
 		}
 		requests.restore(restored, maxID)
-		persist, err := openRequestLogFile(path)
-		if err != nil {
-			return err
-		}
 		requests.persist = persist
 		log.Printf("persisting request metadata (no prompts or tokens) to %s", persist.path)
 	}
@@ -186,6 +192,7 @@ func newServerMux(proxy *responsesProxy) *http.ServeMux {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /", proxy.handleDashboard)
 	mux.HandleFunc("GET /dashboard", proxy.handleDashboard)
+	mux.HandleFunc("POST /dashboard/api/logout", proxy.handleDashboardLogout)
 	mux.HandleFunc("GET /dashboard/api/requests", proxy.handleDashboardRequests)
 	mux.HandleFunc("DELETE /dashboard/api/requests", proxy.handleDashboardRequests)
 	mux.HandleFunc("GET /dashboard/api/costs", proxy.handleDashboardCosts)
@@ -193,15 +200,15 @@ func newServerMux(proxy *responsesProxy) *http.ServeMux {
 	mux.HandleFunc("GET /dashboard/api/usage", proxy.handleCodexUsage)
 	mux.HandleFunc("GET /usage", proxy.handleCodexUsage)
 	mux.HandleFunc("GET /healthz", proxy.handleHealth)
-	mux.HandleFunc("GET /v1/models", proxy.handleModels)
-	mux.HandleFunc("GET /v1/responses", proxy.handleResponsesWebSocket)
-	mux.HandleFunc("POST /v1/responses", proxy.handleResponses)
-	mux.HandleFunc("POST /v1/images/generations", proxy.handleImageGenerations)
-	mux.HandleFunc("POST /v1/images/edits", proxy.handleImageEdits)
-	mux.HandleFunc("GET /v1/codex/responses", proxy.handleResponsesWebSocket)
-	mux.HandleFunc("POST /v1/codex/responses", proxy.handleResponses)
-	mux.HandleFunc("POST /v1/chat/completions", proxy.handleChatCompletions)
-	mux.HandleFunc("POST /v1/alpha/search", proxy.handleAlphaSearch)
+	mux.HandleFunc("GET /v1/models", proxy.withClientAuthentication(proxy.handleModels))
+	mux.HandleFunc("GET /v1/responses", proxy.withClientAuthentication(proxy.handleResponsesWebSocket))
+	mux.HandleFunc("POST /v1/responses", proxy.withClientAuthentication(proxy.handleResponses))
+	mux.HandleFunc("POST /v1/images/generations", proxy.withClientAuthentication(proxy.handleImageGenerations))
+	mux.HandleFunc("POST /v1/images/edits", proxy.withClientAuthentication(proxy.handleImageEdits))
+	mux.HandleFunc("GET /v1/codex/responses", proxy.withClientAuthentication(proxy.handleResponsesWebSocket))
+	mux.HandleFunc("POST /v1/codex/responses", proxy.withClientAuthentication(proxy.handleResponses))
+	mux.HandleFunc("POST /v1/chat/completions", proxy.withClientAuthentication(proxy.handleChatCompletions))
+	mux.HandleFunc("POST /v1/alpha/search", proxy.withClientAuthentication(proxy.handleAlphaSearch))
 	return mux
 }
 
@@ -257,8 +264,19 @@ func loadConfig(args []string) (config, error) {
 		models:               nil,
 		timeout:              defaultHTTPTimeout,
 		requestLogLimit:      defaultRequestLogLimit,
-		requestLogFile:       envOr("CODEX_AUTH_BROKER_REQUEST_LOG_FILE", defaultRequestLogFile()),
+		requestLogFile:       defaultRequestLogFile(),
+		requestLogMaxBytes:   defaultRequestLogMaxBytes,
 		maxConcurrent:        defaultMaxConcurrent,
+	}
+	if value, present := os.LookupEnv("CODEX_AUTH_BROKER_REQUEST_LOG_FILE"); present {
+		cfg.requestLogFile = strings.TrimSpace(value)
+	}
+	if value := strings.TrimSpace(os.Getenv("CODEX_AUTH_BROKER_REQUEST_LOG_MAX_BYTES")); value != "" {
+		parsed, err := strconv.ParseInt(value, 10, 64)
+		if err != nil {
+			return cfg, fmt.Errorf("invalid CODEX_AUTH_BROKER_REQUEST_LOG_MAX_BYTES: %w", err)
+		}
+		cfg.requestLogMaxBytes = parsed
 	}
 	if value := strings.TrimSpace(os.Getenv("CODEX_AUTH_BROKER_REFRESH_SKEW")); value != "" {
 		parsed, err := time.ParseDuration(value)
@@ -308,6 +326,7 @@ func loadConfig(args []string) (config, error) {
 	fs.StringVar(&timeoutValue, "timeout", timeoutValue, "upstream request timeout")
 	fs.IntVar(&cfg.requestLogLimit, "request-log-limit", cfg.requestLogLimit, "maximum in-memory dashboard request entries")
 	fs.IntVar(&cfg.maxConcurrent, "max-concurrent", cfg.maxConcurrent, "maximum simultaneous upstream Codex calls; excess requests queue up to 120s then get 429; 0 disables the cap")
+	fs.Int64Var(&cfg.requestLogMaxBytes, "request-log-max-bytes", cfg.requestLogMaxBytes, "maximum persisted request metadata bytes; 0 keeps unlimited history")
 	fs.StringVar(&cfg.requestLogFile, "request-log-file", cfg.requestLogFile, "JSONL file for persistent request metadata; empty disables persistence")
 	fs.Usage = func() { usage(fs.Output()) }
 	if err := fs.Parse(args); err != nil {
@@ -397,6 +416,9 @@ func loadConfig(args []string) (config, error) {
 	if retention := strings.TrimSpace(cfg.promptCacheRetention); retention != "" && retention != "in_memory" && retention != "24h" {
 		return cfg, errors.New("prompt-cache-retention must be empty, in_memory, or 24h")
 	}
+	if cfg.requestLogMaxBytes < 0 {
+		return cfg, errors.New("request-log-max-bytes must be zero or greater")
+	}
 	if cfg.requestLogLimit < 0 {
 		return cfg, errors.New("request-log-limit must be zero or greater")
 	}
@@ -433,6 +455,7 @@ Common flags:
   --prompt-cache-key       Inject prompt_cache_key when clients omit it
   --prompt-cache-retention Record legacy retention intent; never forward it upstream
   --request-log-limit      In-memory dashboard request history size
+  --request-log-max-bytes   Maximum persisted log bytes; 0 disables the cap
   --request-log-file       JSONL file for persistent request metadata; empty disables
   --max-concurrent         Cap on simultaneous upstream Codex calls (default 8; 0 = unlimited)
 `)

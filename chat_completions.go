@@ -1,7 +1,7 @@
 package main
 
 import (
-	"bufio"
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -29,13 +29,13 @@ func (p *responsesProxy) handleChatCompletions(w http.ResponseWriter, r *http.Re
 
 	chatBody, err := decodeRequestBody(r.Body, r.Header.Get("Content-Encoding"))
 	if err != nil {
-		logEntry.markError(http.StatusBadRequest, err.Error())
+		logEntry.markError(http.StatusBadRequest, "invalid JSON request body")
 		writeChatCompletionsError(w, http.StatusBadRequest, err.Error(), "")
 		return
 	}
 	body, chatInfo, err := translateChatCompletionsBody(chatBody)
 	if err != nil {
-		logEntry.markError(http.StatusBadRequest, err.Error())
+		logEntry.markError(http.StatusBadRequest, "invalid chat request parameter: "+chatErrorParam(err))
 		writeChatCompletionsError(w, http.StatusBadRequest, err.Error(), chatErrorParam(err))
 		return
 	}
@@ -82,7 +82,7 @@ func (p *responsesProxy) handleChatCompletions(w http.ResponseWriter, r *http.Re
 		finalResponse, err := aggregateResponsesSSE(resp.Body)
 		if err != nil {
 			message := "aggregate upstream stream failed: " + err.Error()
-			logEntry.markError(http.StatusBadGateway, message)
+			logEntry.markError(http.StatusBadGateway, "aggregate upstream stream failed")
 			writeChatCompletionsError(w, http.StatusBadGateway, message, "")
 			return
 		}
@@ -126,7 +126,7 @@ func (p *responsesProxy) relayChatCompletionsUpstreamError(w http.ResponseWriter
 	}
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(resp.StatusCode)
-	_, _ = w.Write([]byte(redactTokenLikeText(string(responseBody))))
+	_, _ = w.Write(normalizeUpstreamErrorBody(responseBody, resp.StatusCode))
 }
 
 type chatRequestError struct {
@@ -168,6 +168,13 @@ func valueOrAny(value string, fallback any) any {
 	return value
 }
 
+// Payload strings are opaque: whitespace can carry text, code indentation,
+// or part of a streamed JSON argument. Keep stringField for identifiers only.
+func chatPayloadString(m map[string]any, key string) string {
+	value, _ := m[key].(string)
+	return value
+}
+
 func translateChatCompletionsBody(chatBody map[string]any) (map[string]any, chatCompletionRequestInfo, error) {
 	var info chatCompletionRequestInfo
 	model := stringField(chatBody, "model")
@@ -194,7 +201,7 @@ func translateChatCompletionsBody(chatBody map[string]any) (map[string]any, chat
 	if !ok || len(messages) == 0 {
 		return nil, info, chatError("messages", "messages must be a non-empty array")
 	}
-	input, instructions, err := translateChatMessages(messages)
+	input, err := translateChatMessages(messages)
 	if err != nil {
 		return nil, info, err
 	}
@@ -204,10 +211,6 @@ func translateChatCompletionsBody(chatBody map[string]any) (map[string]any, chat
 		"input":  input,
 		"stream": info.Stream,
 	}
-	if instructions != "" {
-		body["instructions"] = instructions
-	}
-
 	copyChatRequestFields(chatBody, body)
 	if err := translateChatReasoning(chatBody, body); err != nil {
 		return nil, info, err
@@ -436,41 +439,41 @@ func translateLegacyFunctionChoice(choice any) (any, error) {
 	return map[string]any{"type": "function", "name": stringField(choiceMap, "name")}, nil
 }
 
-func translateChatMessages(messages []any) ([]any, string, error) {
+func translateChatMessages(messages []any) ([]any, error) {
 	input := make([]any, 0, len(messages))
 	for index, rawMessage := range messages {
 		message, ok := rawMessage.(map[string]any)
 		if !ok {
-			return nil, "", chatError(fmt.Sprintf("messages.%d", index), "message %d must be an object", index)
+			return nil, chatError(fmt.Sprintf("messages.%d", index), "message %d must be an object", index)
 		}
 		role := stringField(message, "role")
 		switch role {
 		case "system", "developer":
 			content, err := translateChatMessageContent(message["content"], "input_text", false)
 			if err != nil {
-				return nil, "", chatError(fmt.Sprintf("messages.%d.content", index), "%v", err)
+				return nil, chatError(fmt.Sprintf("messages.%d.content", index), "%v", err)
 			}
 			input = append(input, map[string]any{"role": "developer", "content": content})
 		case "user":
 			content, err := translateChatMessageContent(message["content"], "input_text", true)
 			if err != nil {
-				return nil, "", chatError(fmt.Sprintf("messages.%d.content", index), "%v", err)
+				return nil, chatError(fmt.Sprintf("messages.%d.content", index), "%v", err)
 			}
 			input = append(input, map[string]any{"role": "user", "content": content})
 		case "assistant":
 			items, err := translateChatAssistantMessage(message)
 			if err != nil {
-				return nil, "", chatError(fmt.Sprintf("messages.%d", index), "%v", err)
+				return nil, chatError(fmt.Sprintf("messages.%d", index), "%v", err)
 			}
 			input = append(input, items...)
 		case "tool":
 			callID := stringField(message, "tool_call_id")
 			if callID == "" {
-				return nil, "", chatError(fmt.Sprintf("messages.%d.tool_call_id", index), "tool_call_id is required")
+				return nil, chatError(fmt.Sprintf("messages.%d.tool_call_id", index), "tool_call_id is required")
 			}
 			output, err := chatTextOnlyContent(message["content"])
 			if err != nil {
-				return nil, "", chatError(fmt.Sprintf("messages.%d.content", index), "%v", err)
+				return nil, chatError(fmt.Sprintf("messages.%d.content", index), "%v", err)
 			}
 			input = append(input, map[string]any{
 				"type":    "function_call_output",
@@ -478,10 +481,10 @@ func translateChatMessages(messages []any) ([]any, string, error) {
 				"output":  output,
 			})
 		default:
-			return nil, "", chatError(fmt.Sprintf("messages.%d.role", index), "unsupported message role %q", role)
+			return nil, chatError(fmt.Sprintf("messages.%d.role", index), "unsupported message role %q", role)
 		}
 	}
-	return input, "", nil
+	return input, nil
 }
 
 func translateChatAssistantMessage(message map[string]any) ([]any, error) {
@@ -522,7 +525,7 @@ func translateChatAssistantMessage(message map[string]any) ([]any, error) {
 				"type":      "function_call",
 				"call_id":   callID,
 				"name":      name,
-				"arguments": valueOr(stringField(function, "arguments"), "{}"),
+				"arguments": valueOr(chatPayloadString(function, "arguments"), "{}"),
 			})
 		}
 	}
@@ -536,7 +539,7 @@ func translateChatAssistantMessage(message map[string]any) ([]any, error) {
 			"type":      "function_call",
 			"call_id":   "call_" + name,
 			"name":      name,
-			"arguments": valueOr(stringField(functionCall, "arguments"), "{}"),
+			"arguments": valueOr(chatPayloadString(functionCall, "arguments"), "{}"),
 		})
 	}
 	if len(items) == 0 {
@@ -558,9 +561,9 @@ func translateChatMessageContent(value any, textType string, allowMedia bool) ([
 			}
 			switch partType := stringField(part, "type"); partType {
 			case "text":
-				parts = append(parts, map[string]any{"type": textType, "text": stringField(part, "text")})
+				parts = append(parts, map[string]any{"type": textType, "text": chatPayloadString(part, "text")})
 			case "refusal":
-				parts = append(parts, map[string]any{"type": textType, "text": stringField(part, "refusal")})
+				parts = append(parts, map[string]any{"type": textType, "text": chatPayloadString(part, "refusal")})
 			case "image_url":
 				if !allowMedia {
 					return nil, errors.New("image content is only supported on user messages")
@@ -617,7 +620,7 @@ func chatTextOnlyContent(value any) (string, error) {
 			if !ok || stringField(part, "type") != "text" {
 				return "", fmt.Errorf("content part %d must be text", index)
 			}
-			parts = append(parts, stringField(part, "text"))
+			parts = append(parts, chatPayloadString(part, "text"))
 		}
 		return strings.Join(parts, ""), nil
 	case nil:
@@ -651,9 +654,9 @@ func chatCompletionFromResponse(response map[string]any, fallbackModel string) (
 					}
 					switch stringField(part, "type") {
 					case "output_text", "text":
-						textParts = append(textParts, stringField(part, "text"))
+						textParts = append(textParts, chatPayloadString(part, "text"))
 					case "refusal":
-						refusalParts = append(refusalParts, stringField(part, "refusal"))
+						refusalParts = append(refusalParts, chatPayloadString(part, "refusal"))
 					}
 				}
 			case "function_call":
@@ -663,7 +666,7 @@ func chatCompletionFromResponse(response map[string]any, fallbackModel string) (
 					"type": "function",
 					"function": map[string]any{
 						"name":      stringField(item, "name"),
-						"arguments": valueOr(stringField(item, "arguments"), "{}"),
+						"arguments": valueOr(chatPayloadString(item, "arguments"), "{}"),
 					},
 				})
 			}
@@ -785,6 +788,12 @@ type chatStreamTool struct {
 	argumentsEmitted bool
 }
 
+type chatStreamContentKey struct {
+	outputIndex  int
+	contentIndex int
+	kind         string
+}
+
 type chatStreamTranslator struct {
 	w            http.ResponseWriter
 	flusher      http.Flusher
@@ -796,12 +805,11 @@ type chatStreamTranslator struct {
 	model       string
 	serviceTier string
 	roleSent    bool
-	textSeen    bool
-	refusalSeen bool
 	toolSeen    bool
 	terminal    bool
 	usage       tokenUsage
 	tools       map[string]*chatStreamTool
+	contentSeen map[chatStreamContentKey]bool
 }
 
 func copyChatCompletionsStream(w http.ResponseWriter, r io.Reader, fallbackModel string, includeUsage bool) (tokenUsage, string, error) {
@@ -812,57 +820,43 @@ func copyChatCompletionsStream(w http.ResponseWriter, r io.Reader, fallbackModel
 		model:        fallbackModel,
 		created:      time.Now().Unix(),
 		tools:        map[string]*chatStreamTool{},
+		contentSeen:  map[chatStreamContentKey]bool{},
 	}
 	translator.flusher, _ = w.(http.Flusher)
 
-	scanner := bufio.NewScanner(r)
-	scanner.Buffer(make([]byte, 64*1024), maxRequestBodyBytes)
-	var dataLines []string
-	flushEvent := func() error {
-		if len(dataLines) == 0 {
+	var eventErr error
+	err := readSSE(r, maxRequestBodyBytes, func(data []byte) error {
+		data = bytes.TrimSpace(data)
+		if len(data) == 0 {
 			return nil
 		}
-		data := strings.TrimSpace(strings.Join(dataLines, "\n"))
-		dataLines = nil
-		if data == "" {
-			return nil
-		}
-		if data == "[DONE]" {
-			if !translator.terminal {
-				if err := translator.finish(nil); err != nil {
-					return err
-				}
-			}
-			return nil
+		if bytes.Equal(data, []byte("[DONE]")) {
+			eventErr = translator.fail("upstream stream ended without a terminal response event", "upstream stream ended without a terminal response event")
+			return eventErr
 		}
 		var event map[string]any
-		if err := json.Unmarshal([]byte(data), &event); err != nil {
-			return err
+		if json.Unmarshal(data, &event) != nil {
+			eventErr = translator.fail("upstream stream contained an invalid JSON event", "upstream stream contained an invalid JSON event")
+			return eventErr
 		}
-		return translator.consume(event)
-	}
-
-	for scanner.Scan() {
-		line := strings.TrimRight(scanner.Text(), "\r")
-		if line == "" {
-			if err := flushEvent(); err != nil {
-				return translator.usage, translator.serviceTier, err
-			}
-			continue
+		eventErr = translator.consume(event)
+		if eventErr != nil {
+			return eventErr
 		}
-		if strings.HasPrefix(line, "data:") {
-			dataLines = append(dataLines, strings.TrimSpace(strings.TrimPrefix(line, "data:")))
+		if translator.terminal {
+			return errSSEComplete
 		}
-	}
-	if err := scanner.Err(); err != nil {
-		return translator.usage, translator.serviceTier, err
-	}
-	if err := flushEvent(); err != nil {
+		return nil
+	})
+	if err != nil {
+		if eventErr == nil {
+			// Framing and read errors from readSSE contain no upstream payload.
+			err = translator.fail(err.Error(), err.Error())
+		}
 		return translator.usage, translator.serviceTier, err
 	}
 	if !translator.terminal {
-		_ = translator.writeDone()
-		return translator.usage, translator.serviceTier, errors.New("upstream stream ended without a terminal response event")
+		return translator.usage, translator.serviceTier, translator.fail("upstream stream ended without a terminal response event", "upstream stream ended without a terminal response event")
 	}
 	return translator.usage, translator.serviceTier, nil
 }
@@ -892,7 +886,7 @@ func (t *chatStreamTranslator) consume(event map[string]any) error {
 			return nil
 		}
 		if stringField(item, "type") == "message" {
-			return t.emitMessageFallback(item)
+			return t.emitMessageFallback(item, intField(event, "output_index"))
 		}
 		if stringField(item, "type") != "function_call" {
 			return nil
@@ -901,7 +895,7 @@ func (t *chatStreamTranslator) consume(event map[string]any) error {
 		if err != nil {
 			return err
 		}
-		arguments := stringField(item, "arguments")
+		arguments := chatPayloadString(item, "arguments")
 		if arguments != "" && !tool.argumentsEmitted {
 			tool.argumentsEmitted = true
 			return t.writeToolArguments(tool.index, arguments)
@@ -910,14 +904,18 @@ func (t *chatStreamTranslator) consume(event map[string]any) error {
 		if err := t.ensureRole(); err != nil {
 			return err
 		}
-		t.textSeen = true
-		return t.writeChoice(map[string]any{"content": stringField(event, "delta")}, nil)
+		if chatPayloadString(event, "delta") != "" {
+			t.contentSeen[chatStreamContentKey{intField(event, "output_index"), intField(event, "content_index"), "text"}] = true
+		}
+		return t.writeChoice(map[string]any{"content": chatPayloadString(event, "delta")}, nil)
 	case "response.refusal.delta":
 		if err := t.ensureRole(); err != nil {
 			return err
 		}
-		t.refusalSeen = true
-		return t.writeChoice(map[string]any{"refusal": stringField(event, "delta")}, nil)
+		if chatPayloadString(event, "delta") != "" {
+			t.contentSeen[chatStreamContentKey{intField(event, "output_index"), intField(event, "content_index"), "refusal"}] = true
+		}
+		return t.writeChoice(map[string]any{"refusal": chatPayloadString(event, "delta")}, nil)
 	case "response.function_call_arguments.delta":
 		key := chatStreamToolKey(stringField(event, "item_id"), intField(event, "output_index"))
 		tool := t.tools[key]
@@ -933,7 +931,7 @@ func (t *chatStreamTranslator) consume(event map[string]any) error {
 			}
 		}
 		tool.argumentsEmitted = true
-		return t.writeToolArguments(tool.index, stringField(event, "delta"))
+		return t.writeToolArguments(tool.index, chatPayloadString(event, "delta"))
 	case "response.completed", "response.done", "response.incomplete":
 		response, _ := event["response"].(map[string]any)
 		return t.finish(response)
@@ -942,7 +940,7 @@ func (t *chatStreamTranslator) consume(event map[string]any) error {
 		if response != nil {
 			t.captureResponse(response)
 		}
-		return t.fail("upstream response failed")
+		return t.fail("upstream response failed", "upstream response failed")
 	case "error":
 		message := "upstream streaming error"
 		if upstreamError, ok := event["error"].(map[string]any); ok {
@@ -950,19 +948,31 @@ func (t *chatStreamTranslator) consume(event map[string]any) error {
 		} else if eventMessage := stringField(event, "message"); eventMessage != "" {
 			message = eventMessage
 		}
-		return t.fail(message)
+		summary := "upstream streaming error"
+		errorBody, _ := event["error"].(map[string]any)
+		if errorBody == nil {
+			errorBody = event
+		}
+		if attributes := safeErrorAttributes(errorBody); attributes != "" {
+			summary += " (" + attributes + ")"
+		}
+		return t.fail(message, summary)
 	}
 	return nil
 }
 
 func (t *chatStreamTranslator) captureResponse(response map[string]any) {
-	if upstreamID := stringField(response, "id"); upstreamID != "" {
-		t.id = chatCompletionID(upstreamID)
+	// Fallback output may precede the first response object. Once a chunk has
+	// been sent, all later chunks must retain that completion's identity.
+	if !t.roleSent {
+		if upstreamID := stringField(response, "id"); upstreamID != "" {
+			t.id = chatCompletionID(upstreamID)
+		}
+		if model := stringField(response, "model"); model != "" {
+			t.model = model
+		}
+		t.created = chatCompletionCreated(response)
 	}
-	if model := stringField(response, "model"); model != "" {
-		t.model = model
-	}
-	t.created = chatCompletionCreated(response)
 	if usage := extractTokenUsage(response); usage.hasAny() {
 		t.usage = usage
 	}
@@ -991,7 +1001,7 @@ func (t *chatStreamTranslator) ensureTool(item map[string]any, outputIndex int) 
 	t.tools[key] = tool
 	t.toolSeen = true
 	callID := valueOr(stringField(item, "call_id"), stringField(item, "id"))
-	arguments := stringField(item, "arguments")
+	arguments := chatPayloadString(item, "arguments")
 	if arguments != "" {
 		tool.argumentsEmitted = true
 	}
@@ -1035,21 +1045,20 @@ func (t *chatStreamTranslator) finish(response map[string]any) error {
 	if t.terminal {
 		return nil
 	}
-	if response != nil {
-		t.captureResponse(response)
-		if err := t.emitResponseOutputFallback(response); err != nil {
-			return err
-		}
+	if response == nil {
+		return t.fail("terminal event is missing its response object", "terminal event is missing its response object")
+	}
+	if status := stringField(response, "status"); status == "failed" || status == "cancelled" {
+		return t.fail("upstream response failed", "upstream response failed")
+	}
+	t.captureResponse(response)
+	if err := t.emitResponseOutputFallback(response); err != nil {
+		return err
 	}
 	if err := t.ensureRole(); err != nil {
 		return err
 	}
-	reason := any("stop")
-	if response != nil && stringField(response, "status") == "incomplete" {
-		reason = "length"
-	} else if t.toolSeen {
-		reason = "tool_calls"
-	}
+	reason := chatFinishReason(response, t.toolSeen)
 	if err := t.writeChoice(map[string]any{}, reason); err != nil {
 		return err
 	}
@@ -1074,7 +1083,7 @@ func (t *chatStreamTranslator) emitResponseOutputFallback(response map[string]an
 		}
 		switch stringField(item, "type") {
 		case "message":
-			if err := t.emitMessageFallback(item); err != nil {
+			if err := t.emitMessageFallback(item, index); err != nil {
 				return err
 			}
 		case "function_call":
@@ -1082,7 +1091,7 @@ func (t *chatStreamTranslator) emitResponseOutputFallback(response map[string]an
 			if err != nil {
 				return err
 			}
-			arguments := stringField(item, "arguments")
+			arguments := chatPayloadString(item, "arguments")
 			if arguments != "" && !tool.argumentsEmitted {
 				tool.argumentsEmitted = true
 				if err := t.writeToolArguments(tool.index, arguments); err != nil {
@@ -1094,42 +1103,39 @@ func (t *chatStreamTranslator) emitResponseOutputFallback(response map[string]an
 	return nil
 }
 
-func (t *chatStreamTranslator) emitMessageFallback(item map[string]any) error {
+func (t *chatStreamTranslator) emitMessageFallback(item map[string]any, outputIndex int) error {
 	content, _ := item["content"].([]any)
-	for _, rawPart := range content {
+	for contentIndex, rawPart := range content {
 		part, ok := rawPart.(map[string]any)
 		if !ok {
 			continue
 		}
+		var kind, field, value string
 		switch stringField(part, "type") {
 		case "output_text", "text":
-			if t.textSeen {
-				continue
-			}
-			t.textSeen = true
-			if err := t.ensureRole(); err != nil {
-				return err
-			}
-			if err := t.writeChoice(map[string]any{"content": stringField(part, "text")}, nil); err != nil {
-				return err
-			}
+			kind, field, value = "text", "content", chatPayloadString(part, "text")
 		case "refusal":
-			if t.refusalSeen {
-				continue
-			}
-			t.refusalSeen = true
-			if err := t.ensureRole(); err != nil {
-				return err
-			}
-			if err := t.writeChoice(map[string]any{"refusal": stringField(part, "refusal")}, nil); err != nil {
-				return err
-			}
+			kind, field, value = "refusal", "refusal", chatPayloadString(part, "refusal")
+		default:
+			continue
+		}
+		key := chatStreamContentKey{outputIndex, contentIndex, kind}
+		if t.contentSeen[key] {
+			continue
+		}
+		t.contentSeen[key] = true
+		if err := t.ensureRole(); err != nil {
+			return err
+		}
+		if err := t.writeChoice(map[string]any{field: value}, nil); err != nil {
+			return err
 		}
 	}
 	return nil
 }
 
-func (t *chatStreamTranslator) fail(message string) error {
+// The client may receive upstream details; the returned error is safe to log.
+func (t *chatStreamTranslator) fail(message, summary string) error {
 	if t.terminal {
 		return nil
 	}
@@ -1146,7 +1152,7 @@ func (t *chatStreamTranslator) fail(message string) error {
 	if err := t.writeDone(); err != nil {
 		return err
 	}
-	return errors.New(redactTokenLikeText(message))
+	return errors.New(summary)
 }
 
 func (t *chatStreamTranslator) writeChoice(delta map[string]any, finishReason any) error {
@@ -1190,7 +1196,7 @@ func (t *chatStreamTranslator) writeObject(value map[string]any) error {
 		return err
 	}
 	if _, err := fmt.Fprintf(t.w, "data: %s\n\n", encoded); err != nil {
-		return err
+		return errors.New("write downstream stream failed")
 	}
 	if t.flusher != nil {
 		t.flusher.Flush()
@@ -1200,7 +1206,7 @@ func (t *chatStreamTranslator) writeObject(value map[string]any) error {
 
 func (t *chatStreamTranslator) writeDone() error {
 	if _, err := io.WriteString(t.w, "data: [DONE]\n\n"); err != nil {
-		return err
+		return errors.New("write downstream stream failed")
 	}
 	if t.flusher != nil {
 		t.flusher.Flush()

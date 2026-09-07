@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"crypto/subtle"
 	"encoding/json"
 	"fmt"
@@ -139,6 +140,9 @@ func rejectImplicitKeyCollision(implicit *clientKey, entries []clientKey) error 
 		return nil
 	}
 	for _, entry := range entries {
+		if entry.Name == implicit.Name {
+			return fmt.Errorf("client name %q is reserved for the implicit client", implicit.Name)
+		}
 		if entry.Key == implicit.Key {
 			return fmt.Errorf("client %q uses the same key as the implicit %q client", entry.Name, implicitClientName)
 		}
@@ -236,6 +240,9 @@ func bearerToken(r *http.Request) string {
 // configured it allows the request anonymously (identity zero, ok true),
 // matching the historical open behavior.
 func (p *responsesProxy) authenticate(r *http.Request) (clientIdentity, bool) {
+	if result, ok := r.Context().Value(clientAuthContextKey{}).(clientAuthResult); ok {
+		return result.identity, result.allowed
+	}
 	reg := p.registry()
 	if !reg.enabled() {
 		return clientIdentity{}, true
@@ -245,4 +252,21 @@ func (p *responsesProxy) authenticate(r *http.Request) (clientIdentity, bool) {
 		return clientIdentity{}, false
 	}
 	return reg.resolve(token)
+}
+
+type clientAuthContextKey struct{}
+
+type clientAuthResult struct {
+	identity clientIdentity
+	allowed  bool
+}
+
+// Resolve once so admission and request attribution use the same key snapshot,
+// including when the keys file changes during a request.
+func (p *responsesProxy) withClientAuthentication(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		identity, allowed := p.authenticate(r)
+		ctx := context.WithValue(r.Context(), clientAuthContextKey{}, clientAuthResult{identity, allowed})
+		next(w, r.WithContext(ctx))
+	}
 }

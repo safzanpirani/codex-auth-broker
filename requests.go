@@ -49,6 +49,7 @@ type requestLogEntry struct {
 	CacheWriteTokens        *int64   `json:"cache_write_tokens,omitempty"`
 	TotalTokens             *int64   `json:"total_tokens,omitempty"`
 	CostUSD                 *float64 `json:"cost_usd,omitempty"`
+	APICostUSD              *float64 `json:"api_cost_usd,omitempty"`
 }
 
 type pendingRequestLog struct {
@@ -60,6 +61,7 @@ type pendingRequestLog struct {
 type requestLogSnapshot struct {
 	Limit         int               `json:"limit"`
 	PersistPath   string            `json:"persist_path,omitempty"`
+	PersistError  string            `json:"persist_error,omitempty"`
 	Retained      int               `json:"retained"`
 	TotalSeen     int64             `json:"total_seen"`
 	RequestLog    []requestLogEntry `json:"requests"`
@@ -79,11 +81,12 @@ func (s *requestLogStore) add(entry requestLogEntry) {
 		return
 	}
 	entry = sanitizeRequestLogEntry(entry)
+	entry = s.priceEntry(entry)
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.nextID++
 	entry.ID = s.nextID
-	s.persist.append(entry)
+	_ = s.persist.append(entry)
 	s.entries = append(s.entries, entry)
 	if extra := len(s.entries) - s.limit; extra > 0 {
 		copy(s.entries, s.entries[extra:])
@@ -102,19 +105,10 @@ func (s *requestLogStore) restore(entries []requestLogEntry, maxID int64) {
 	if extra := len(entries) - s.limit; extra > 0 {
 		entries = entries[extra:]
 	}
-	// Backfill costs for entries persisted before their model was priced (or
-	// with a stale price): recompute from the stored token counts.
+	// Recompute both views from stored token counts so pricing changes apply to
+	// historical dashboard rows.
 	for i := range entries {
-		if entries[i].CostUSD != nil {
-			continue
-		}
-		model := valueOr(entries[i].NormalizedModel, entries[i].Model)
-		entries[i].CostUSD = estimateCostUSD(s.pricing, model, tokenUsage{
-			InputTokens:      entries[i].InputTokens,
-			OutputTokens:     entries[i].OutputTokens,
-			CachedTokens:     entries[i].CachedTokens,
-			CacheWriteTokens: entries[i].CacheWriteTokens,
-		})
+		entries[i] = s.priceEntry(entries[i])
 	}
 	s.entries = append(s.entries, entries...)
 	if maxID > s.nextID {
@@ -139,12 +133,17 @@ func (s *requestLogStore) snapshot(limit int) requestLogSnapshot {
 		requests = append(requests, s.entries[i])
 	}
 	persistPath := ""
+	persistError := ""
 	if s.persist != nil {
+		s.persist.mu.RLock()
 		persistPath = s.persist.path
+		persistError = s.persist.lastError
+		s.persist.mu.RUnlock()
 	}
 	return requestLogSnapshot{
 		Limit:         s.limit,
 		PersistPath:   persistPath,
+		PersistError:  persistError,
 		Retained:      len(s.entries),
 		TotalSeen:     s.nextID,
 		RequestLog:    requests,
@@ -178,9 +177,9 @@ func (p *responsesProxy) beginRequestLog(r *http.Request) *pendingRequestLog {
 		Client:    clientAddress(r.RemoteAddr),
 		RequestID: requestIDFromHeaders(r),
 	}
-	// Attribute the entry to the named key that authenticated it. Resolution is
-	// repeated here (handlers also authenticate) but cheap: the keys file is
-	// stat'ed at most every keyRegistryStatInterval. Unauthorized requests keep
+	// Attribute the entry using the authentication snapshot installed by API
+	// middleware, so authorization and accounting use the same key identity.
+	// Direct handler callers fall back to resolution; unauthorized requests keep
 	// an empty client name.
 	if id, ok := p.authenticate(r); ok {
 		entry.ClientName = id.Name
@@ -201,15 +200,28 @@ func (l *pendingRequestLog) finish() {
 		l.Entry.Status = http.StatusOK
 	}
 	l.Entry.DurationMS = time.Since(l.started).Milliseconds()
-	model := valueOr(l.Entry.NormalizedModel, l.Entry.Model)
-	l.Entry.CostUSD = estimateCostUSD(l.store.pricing, model, tokenUsage{
-		InputTokens:      l.Entry.InputTokens,
-		OutputTokens:     l.Entry.OutputTokens,
-		CachedTokens:     l.Entry.CachedTokens,
-		CacheWriteTokens: l.Entry.CacheWriteTokens,
-		TotalTokens:      l.Entry.TotalTokens,
-	})
 	l.store.add(l.Entry)
+}
+
+// priceEntry uses today's configured rates everywhere history is presented.
+// Stores without a pricing table preserve supplied estimates (useful for
+// metadata-only consumers); production always installs a table at startup.
+func (s *requestLogStore) priceEntry(entry requestLogEntry) requestLogEntry {
+	if s == nil || s.pricing == nil {
+		return entry
+	}
+	model := valueOr(entry.NormalizedModel, entry.Model)
+	tier := valueOr(entry.AppliedServiceTier, entry.ServiceTier)
+	usage := tokenUsage{
+		InputTokens:      entry.InputTokens,
+		OutputTokens:     entry.OutputTokens,
+		CachedTokens:     entry.CachedTokens,
+		CacheWriteTokens: entry.CacheWriteTokens,
+		TotalTokens:      entry.TotalTokens,
+	}
+	entry.CostUSD = estimateCostUSDForTier(s.pricing, model, tier, usage)
+	entry.APICostUSD = estimateAPICostUSDForTier(s.pricing, model, tier, usage)
+	return entry
 }
 
 func (l *pendingRequestLog) markError(status int, message string) {
@@ -362,7 +374,10 @@ func truncateLogField(value string, max int) string {
 	if max <= 0 || len(value) <= max {
 		return value
 	}
-	return value[:max-1] + "..."
+	if max <= 3 {
+		return strings.Repeat(".", max)
+	}
+	return value[:max-3] + "..."
 }
 
 func sanitizeRequestLogEntry(entry requestLogEntry) requestLogEntry {

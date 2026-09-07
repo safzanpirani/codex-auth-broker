@@ -39,8 +39,9 @@ OAuth login, while keeping the real refresh token local.
 - Live Codex usage comes from `GET https://chatgpt.com/backend-api/wham/usage`
   using the local access token and `ChatGPT-Account-Id` header when present.
 - Keep the advertised model set, README model examples, and Factory/Pi docs in
-  sync. The current primary set is `gpt-5.5`, `gpt-5.4`, `gpt-5.4-mini`, and
-  `gpt-5.3-codex`, with reasoning-effort suffixes where useful.
+  sync. The current primary set is `gpt-6-astra`, `gpt-5.5`, `gpt-5.4`,
+  `gpt-5.4-mini`, and `gpt-5.3-codex`, with reasoning-effort suffixes where
+  useful.
 
 ## Development
 

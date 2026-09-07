@@ -20,6 +20,28 @@ func newKeyedProxy() *responsesProxy {
 	}
 }
 
+func TestDashboardLogoutExpiresCookie(t *testing.T) {
+	proxy := newKeyedProxy()
+	mux := newServerMux(proxy)
+	request := httptest.NewRequest(http.MethodPost, "/dashboard/api/logout", nil)
+	request.AddCookie(&http.Cookie{Name: dashboardCookieName, Value: "admin-key"})
+	response := httptest.NewRecorder()
+	mux.ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("logout status=%d", response.Code)
+	}
+	cookies := response.Result().Cookies()
+	if len(cookies) != 1 || cookies[0].Name != dashboardCookieName || cookies[0].MaxAge >= 0 || cookies[0].Value != "" || !cookies[0].HttpOnly {
+		t.Fatal("logout did not expire the HttpOnly dashboard cookie")
+	}
+	request = httptest.NewRequest(http.MethodGet, "/dashboard", nil)
+	response = httptest.NewRecorder()
+	mux.ServeHTTP(response, request)
+	if response.Code != http.StatusUnauthorized {
+		t.Fatalf("dashboard after cookie removal status=%d", response.Code)
+	}
+}
+
 func TestDashboardGating(t *testing.T) {
 	tests := []struct {
 		name       string

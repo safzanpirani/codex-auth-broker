@@ -2,7 +2,6 @@ package main
 
 import (
 	"net/http"
-	"os"
 	"sort"
 	"time"
 )
@@ -32,6 +31,7 @@ type costSummary struct {
 	Source       string                      `json:"source"`
 	PersistPath  string                      `json:"persist_path,omitempty"`
 	PersistBytes int64                       `json:"persist_bytes,omitempty"`
+	PersistError string                      `json:"persist_error,omitempty"`
 	Windows      map[string]costWindowTotals `json:"windows"`
 	GeneratedAt  string                      `json:"generated_at"`
 }
@@ -50,7 +50,8 @@ func (p *responsesProxy) handleDashboardCosts(w http.ResponseWriter, r *http.Req
 	if !p.requireDashboardAdmin(w, r) {
 		return
 	}
-	summary, err := p.requests.costSummary(time.Now().UTC())
+	apiPricing := r.URL.Query().Get("pricing") == "api"
+	summary, err := p.requests.costSummary(time.Now().UTC(), apiPricing)
 	if err != nil {
 		writeProxyError(w, http.StatusInternalServerError, "cost aggregation failed: "+err.Error())
 		return
@@ -59,9 +60,9 @@ func (p *responsesProxy) handleDashboardCosts(w http.ResponseWriter, r *http.Req
 }
 
 // costSummary aggregates request totals over fixed windows. It scans the
-// persisted JSONL file when persistence is enabled (full history), and falls
+// retained JSONL history when persistence is enabled, and falls
 // back to the in-memory ring otherwise.
-func (s *requestLogStore) costSummary(now time.Time) (costSummary, error) {
+func (s *requestLogStore) costSummary(now time.Time, apiPricing bool) (costSummary, error) {
 	summary := costSummary{
 		Source:      "memory",
 		GeneratedAt: now.Format(time.RFC3339Nano),
@@ -78,6 +79,10 @@ func (s *requestLogStore) costSummary(now time.Time) (costSummary, error) {
 		started, err := time.Parse(time.RFC3339Nano, entry.StartedAt)
 		if err != nil {
 			return
+		}
+		entryCost := entry.CostUSD
+		if apiPricing {
+			entryCost = entry.APICostUSD
 		}
 		for _, win := range costWindows {
 			if win.age > 0 && now.Sub(started) > win.age {
@@ -97,11 +102,11 @@ func (s *requestLogStore) costSummary(now time.Time) (costSummary, error) {
 			if entry.CacheWriteTokens != nil {
 				acc.totals.CacheWriteTokens += *entry.CacheWriteTokens
 			}
-			if entry.CostUSD == nil {
+			if entryCost == nil {
 				continue
 			}
 			acc.totals.Priced++
-			acc.totals.CostUSD += *entry.CostUSD
+			acc.totals.CostUSD += *entryCost
 			model := valueOr(entry.NormalizedModel, entry.Model)
 			byModel := acc.models[model]
 			if byModel == nil {
@@ -109,7 +114,7 @@ func (s *requestLogStore) costSummary(now time.Time) (costSummary, error) {
 				acc.models[model] = byModel
 			}
 			byModel.Requests++
-			byModel.CostUSD += *entry.CostUSD
+			byModel.CostUSD += *entryCost
 			if entry.InputTokens != nil {
 				byModel.InputTokens += *entry.InputTokens
 			}
@@ -125,23 +130,11 @@ func (s *requestLogStore) costSummary(now time.Time) (costSummary, error) {
 		}
 	}
 
-	if s != nil && s.persist != nil {
-		summary.Source = "file"
-		summary.PersistPath = s.persist.path
-		if stat, err := os.Stat(s.persist.path); err == nil {
-			summary.PersistBytes = stat.Size()
-		}
-		if err := scanPersistedEntries(s.persist.path, consume); err != nil {
-			return summary, err
-		}
-	} else if s != nil {
-		s.mu.Lock()
-		entries := make([]requestLogEntry, len(s.entries))
-		copy(entries, s.entries)
-		s.mu.Unlock()
-		for _, entry := range entries {
-			consume(entry)
-		}
+	source, err := s.visitRetainedEntries(consume)
+	summary.Source, summary.PersistPath = source.Source, source.PersistPath
+	summary.PersistBytes, summary.PersistError = source.PersistBytes, source.PersistError
+	if err != nil {
+		return summary, err
 	}
 
 	summary.Windows = make(map[string]costWindowTotals, len(costWindows))

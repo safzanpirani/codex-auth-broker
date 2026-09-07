@@ -51,7 +51,7 @@ func TestEstimateCostUSDPricesGPT56CacheWrites(t *testing.T) {
 		t.Fatal("expected cost for gpt-5.6-sol")
 	}
 	// 40k normal input + 40k cache reads + 20k cache writes + 10k output.
-	want := (40_000*4.00 + 40_000*0.40 + 20_000*5.00 + 10_000*20.00) / 1e6
+	want := (40_000*4.00 + 40_000*0.40 + 20_000*4.00 + 10_000*20.00) / 1e6
 	if math.Abs(*cost-want) > 1e-9 {
 		t.Fatalf("cost = %v, want %v", *cost, want)
 	}
@@ -92,6 +92,49 @@ func TestLookupModelPricingGPT56(t *testing.T) {
 	}
 }
 
+func TestLookupModelPricingGPT6Astra(t *testing.T) {
+	pricing, ok := lookupModelPricing(defaultModelPricing, "gpt-6-astra")
+	if !ok {
+		t.Fatal("expected pricing for gpt-6-astra")
+	}
+	if pricing.InputPerM != 10.00 || pricing.CachedPerM != 1.00 || pricing.CacheWritePerM != 10.00 || pricing.OutputPerM != 50.00 {
+		t.Fatalf("unexpected gpt-6-astra pricing: %+v", pricing)
+	}
+	if pricing.LongContextThreshold != 0 {
+		t.Fatalf("long-context threshold = %d, want no Codex multiplier", pricing.LongContextThreshold)
+	}
+}
+
+func TestEstimateCostUSDPriorityTier(t *testing.T) {
+	usage := tokenUsage{InputTokens: int64Ptr(1_000_000), OutputTokens: int64Ptr(1_000_000)}
+	standard := estimateCostUSDForTier(defaultModelPricing, "gpt-6-astra", "default", usage)
+	priority := estimateCostUSDForTier(defaultModelPricing, "gpt-6-astra", "priority", usage)
+	fastAlias := estimateCostUSDForTier(defaultModelPricing, "gpt-6-astra", "fast", usage)
+	if standard == nil || priority == nil || fastAlias == nil {
+		t.Fatal("expected Astra cost estimates")
+	}
+	if math.Abs(*priority-*standard*2) > 1e-9 || math.Abs(*fastAlias-*standard*2) > 1e-9 {
+		t.Fatalf("standard=%v priority=%v fast=%v, want priority and fast at 2x", *standard, *priority, *fastAlias)
+	}
+}
+
+func TestAstraCodexAndAPIEquivalentPricing(t *testing.T) {
+	usage := tokenUsage{
+		InputTokens: int64Ptr(longContextThresholdTokens + 1), OutputTokens: int64Ptr(10_000),
+		CacheWriteTokens: int64Ptr(20_000),
+	}
+	codex := estimateCostUSDForTier(defaultModelPricing, "gpt-6-astra", "", usage)
+	api := estimateAPICostUSDForTier(defaultModelPricing, "gpt-6-astra", "", usage)
+	if codex == nil || api == nil {
+		t.Fatal("expected both Astra estimates")
+	}
+	codexWant := ((272_001-20_000)*10.00 + 20_000*10.00 + 10_000*50.00) / 1e6
+	apiWant := (((272_001-20_000)*10.00+20_000*12.50)*2 + 10_000*50.00*1.5) / 1e6
+	if math.Abs(*codex-codexWant) > 1e-9 || math.Abs(*api-apiWant) > 1e-9 {
+		t.Fatalf("codex=%v api=%v, want codex=%v api=%v", *codex, *api, codexWant, apiWant)
+	}
+}
+
 func TestEstimateCostUSDLongContextPremium(t *testing.T) {
 	baseUsage := tokenUsage{
 		InputTokens:      int64Ptr(longContextThresholdTokens),
@@ -103,7 +146,7 @@ func TestEstimateCostUSDLongContextPremium(t *testing.T) {
 	if base == nil {
 		t.Fatal("expected base cost")
 	}
-	baseWant := ((272_000-40_000-20_000)*4.00 + 40_000*0.40 + 20_000*5.00 + 10_000*20.00) / 1e6
+	baseWant := ((272_000-40_000-20_000)*4.00 + 40_000*0.40 + 20_000*4.00 + 10_000*20.00) / 1e6
 	if math.Abs(*base-baseWant) > 1e-9 {
 		t.Fatalf("threshold cost = %v, want %v", *base, baseWant)
 	}
@@ -114,7 +157,7 @@ func TestEstimateCostUSDLongContextPremium(t *testing.T) {
 	if premium == nil {
 		t.Fatal("expected premium cost")
 	}
-	premiumWant := (((272_001-40_000-20_000)*4.00+40_000*0.40+20_000*5.00)*2 + 10_000*20.00*1.5) / 1e6
+	premiumWant := (((272_001-40_000-20_000)*4.00+40_000*0.40+20_000*4.00)*2 + 10_000*20.00*1.5) / 1e6
 	if math.Abs(*premium-premiumWant) > 1e-9 {
 		t.Fatalf("premium cost = %v, want %v", *premium, premiumWant)
 	}
@@ -173,7 +216,7 @@ func TestCostSummaryWindows(t *testing.T) {
 	store.add(old)
 	store.add(recent)
 
-	summary, err := store.costSummary(now)
+	summary, err := store.costSummary(now, false)
 	if err != nil {
 		t.Fatal(err)
 	}

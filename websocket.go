@@ -46,18 +46,26 @@ func (p *responsesProxy) handleResponsesWebSocket(w http.ResponseWriter, r *http
 	}
 	defer release()
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	upstream, response, acct, err := p.dialResponsesWebSocket(ctx, r)
+	upstream, response, acct, err := p.dialResponsesWebSocket(r.Context(), r)
 	if err != nil {
 		status := http.StatusBadGateway
 		if response != nil && response.StatusCode >= 400 {
 			status = response.StatusCode
 		}
+		if errors.Is(err, errAllCoolingDown) || status == http.StatusTooManyRequests {
+			p.writeDispatchFailure(w, nil, &dispatchFailure{
+				status:     http.StatusTooManyRequests,
+				message:    "all Codex accounts are cooling down",
+				retryAfter: p.pool.soonestReset(time.Now()),
+			})
+			return
+		}
 		writeProxyError(w, status, "upstream WebSocket handshake failed")
 		return
 	}
 	defer upstream.CloseNow()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 
 	for _, key := range responsesWebSocketResponseHeaders {
 		if value := response.Header.Get(key); value != "" {
@@ -100,12 +108,21 @@ func (p *responsesProxy) dialResponsesWebSocket(ctx context.Context, r *http.Req
 	var lastResponse *http.Response
 	var lastErr error
 	for attempt := 0; attempt < n; attempt++ {
+		if err := ctx.Err(); err != nil {
+			return nil, nil, nil, err
+		}
 		acct, err := p.pool.pick(time.Now())
 		if err != nil {
+			if lastErr == nil {
+				lastErr = err
+			}
 			break
 		}
 		access, err := acct.mgr.current(ctx)
 		if err != nil {
+			if ctx.Err() != nil {
+				return nil, nil, nil, ctx.Err()
+			}
 			acct.cool(time.Now().Add(authErrorCooldown), "auth error: "+err.Error())
 			lastErr = err
 			continue

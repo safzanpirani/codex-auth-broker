@@ -72,12 +72,40 @@ func TestNormalizeFactoryModel(t *testing.T) {
 		{input: "gpt-5.6-sol(ultra)", model: "gpt-5.6-sol", effort: "max"},
 		{input: "gpt-5.6-terra-ultra", model: "gpt-5.6-terra", effort: "max"},
 		{input: "gpt-5.6-luna-max", model: "gpt-5.6-luna", effort: "max"},
+		{input: "gpt-6-astra(max)", model: "gpt-6-astra", effort: "max"},
+		{input: "gpt-6-astra-ultra", model: "gpt-6-astra", effort: "max"},
+		{input: "gpt-6-astra-non-reasoning", model: "gpt-6-astra", effort: ""},
 	}
 	for _, test := range tests {
 		model, effort := normalizeFactoryModel(test.input)
 		if model != test.model || effort != test.effort {
 			t.Fatalf("normalizeFactoryModel(%q) = (%q, %q), want (%q, %q)", test.input, model, effort, test.model, test.effort)
 		}
+	}
+}
+
+func TestNormalizeResponsesBodyPreservesAstraFeatures(t *testing.T) {
+	body := map[string]any{
+		"model": "gpt-6-astra(max)",
+		"input": []any{
+			map[string]any{"type": "configuration_update", "reasoning": map[string]any{"effort": "high"}},
+		},
+		"tools": []any{
+			map[string]any{"type": "function", "name": "slow_tool", "async": true},
+		},
+		"prompt_cache_options": map[string]any{"ttl": "30m"},
+	}
+	normalizeResponsesBody(body, config{}, httptest.NewRequest(http.MethodPost, "/v1/responses", nil))
+	if _, ok := body["prompt_cache_options"]; !ok {
+		t.Fatal("Astra prompt_cache_options should be preserved")
+	}
+	input := body["input"].([]any)[0].(map[string]any)
+	if input["type"] != "configuration_update" {
+		t.Fatalf("configuration update changed: %#v", input)
+	}
+	tool := body["tools"].([]any)[0].(map[string]any)
+	if tool["async"] != true {
+		t.Fatalf("async tool flag changed: %#v", tool)
 	}
 }
 
@@ -676,6 +704,18 @@ func TestBuildUpstreamRequestOmitsBetaFeaturesByDefault(t *testing.T) {
 	}
 	if got := req.Header.Get(codexBetaFeaturesHeader); got != "" {
 		t.Fatalf("%s = %q, want it unset on an ordinary turn", codexBetaFeaturesHeader, got)
+	}
+}
+
+func TestNormalizeInputPreservesWhitespace(t *testing.T) {
+	for _, input := range []string{"  indented\n\n", " \t\n"} {
+		body := map[string]any{"input": input}
+		normalizeInput(body)
+		item := body["input"].([]any)[0].(map[string]any)
+		text := item["content"].([]any)[0].(map[string]any)["text"]
+		if text != input {
+			t.Fatalf("input = %q, want %q", text, input)
+		}
 	}
 }
 

@@ -24,11 +24,12 @@ type userUsageRow struct {
 }
 
 type userUsageSummary struct {
-	Source      string         `json:"source"`
-	Window      string         `json:"window"`
-	Requests    int            `json:"requests"`
-	Users       []userUsageRow `json:"users"`
-	GeneratedAt string         `json:"generated_at"`
+	Source       string         `json:"source"`
+	PersistError string         `json:"persist_error,omitempty"`
+	Window       string         `json:"window"`
+	Requests     int            `json:"requests"`
+	Users        []userUsageRow `json:"users"`
+	GeneratedAt  string         `json:"generated_at"`
 }
 
 // handleUsageByUser serves GET /dashboard/api/usage/by-user. Admin-gated like
@@ -118,19 +119,10 @@ func (s *requestLogStore) userUsageSummary(now time.Time, age time.Duration, win
 		}
 	}
 
-	if s != nil && s.persist != nil {
-		summary.Source = "file"
-		if err := scanPersistedEntries(s.persist.path, consume); err != nil {
-			return summary, err
-		}
-	} else if s != nil {
-		s.mu.Lock()
-		entries := make([]requestLogEntry, len(s.entries))
-		copy(entries, s.entries)
-		s.mu.Unlock()
-		for _, entry := range entries {
-			consume(entry)
-		}
+	source, err := s.visitRetainedEntries(consume)
+	summary.Source, summary.PersistError = source.Source, source.PersistError
+	if err != nil {
+		return summary, err
 	}
 
 	summary.Users = make([]userUsageRow, 0, len(rows))

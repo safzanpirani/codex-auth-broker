@@ -1,7 +1,6 @@
 package main
 
 import (
-	"bufio"
 	"bytes"
 	"encoding/base64"
 	"encoding/binary"
@@ -96,30 +95,7 @@ func (p *responsesProxy) handleImageEdits(w http.ResponseWriter, r *http.Request
 		p.streamOneImage(w, r, req, logEntry, "image_edit")
 		return
 	}
-	results := make([]imageGenerationResult, 0, req.Count)
-	for i := 0; i < req.Count; i++ {
-		result, fail := p.generateOneImage(r, req, i, logEntry)
-		if fail != nil {
-			p.writeDispatchFailure(w, logEntry, fail)
-			return
-		}
-		results = append(results, result)
-	}
-	data := make([]generatedImage, 0, len(results))
-	usages := make([]map[string]any, 0, len(results))
-	for _, result := range results {
-		data = append(data, result.Image)
-		if result.Usage != nil {
-			usages = append(usages, result.Usage)
-		}
-	}
-	response := map[string]any{"created": time.Now().Unix(), "data": data}
-	if usage := aggregateImageUsage(usages); usage != nil {
-		response["usage"] = usage
-		logEntry.markUsage(extractTokenUsage(map[string]any{"usage": usage}))
-	}
-	logEntry.markStatus(http.StatusOK)
-	writeJSON(w, http.StatusOK, response)
+	p.writeImageResults(w, r, req, logEntry)
 }
 
 var errImageRequestTooLarge = errors.New("image request exceeds size limit")
@@ -437,6 +413,10 @@ func (p *responsesProxy) handleImageGenerations(w http.ResponseWriter, r *http.R
 		return
 	}
 
+	p.writeImageResults(w, r, req, logEntry)
+}
+
+func (p *responsesProxy) writeImageResults(w http.ResponseWriter, r *http.Request, req imageGenerationRequest, logEntry *pendingRequestLog) {
 	results := make([]imageGenerationResult, 0, req.Count)
 	for i := 0; i < req.Count; i++ {
 		result, fail := p.generateOneImage(r, req, i, logEntry)
@@ -790,19 +770,11 @@ func imageStreamError() map[string]any {
 
 func parseImageSSEStream(reader io.Reader, onPartial func(string, int) error) (imageGenerationResult, error) {
 	limited := &io.LimitedReader{R: reader, N: maxImageSSEBytes + 1}
-	scanner := bufio.NewScanner(limited)
-	scanner.Buffer(make([]byte, 64*1024), maxImageSSEEventBytes)
-	var dataLines []string
 	var doneItems []map[string]any
 	var completed map[string]any
 	events := 0
-	terminal := false
-	flush := func() error {
-		if len(dataLines) == 0 {
-			return nil
-		}
-		data := strings.TrimSpace(strings.Join(dataLines, "\n"))
-		dataLines = nil
+	err := readSSE(limited, maxImageSSEEventBytes, func(payload []byte) error {
+		data := strings.TrimSpace(string(payload))
 		if data == "" || data == "[DONE]" {
 			return nil
 		}
@@ -849,40 +821,22 @@ func parseImageSSEStream(reader io.Reader, onPartial func(string, int) error) (i
 			if !ok {
 				return errors.New("response.completed missing response")
 			}
-			completed, terminal = response, true
+			completed = response
+			return errSSEComplete
 		case "response.output_item.done":
 			if item, ok := event["item"].(map[string]any); ok && stringField(item, "type") == "image_generation_call" {
 				doneItems = append(doneItems, item)
 			}
 		}
 		return nil
-	}
-	for scanner.Scan() {
-		line := strings.TrimRight(scanner.Text(), "\r")
-		if line == "" {
-			if err := flush(); err != nil {
-				return imageGenerationResult{}, err
-			}
-			if terminal {
-				break
-			}
-			continue
-		}
-		if strings.HasPrefix(line, "data:") {
-			dataLines = append(dataLines, strings.TrimPrefix(strings.TrimPrefix(line, "data:"), " "))
-		}
-	}
-	if err := scanner.Err(); err != nil {
+	})
+	if err != nil {
 		return imageGenerationResult{}, err
 	}
 	if limited.N <= 0 {
 		return imageGenerationResult{}, errors.New("response exceeded size limit")
 	}
-	if !terminal {
-		if err := flush(); err != nil {
-			return imageGenerationResult{}, err
-		}
-	}
+
 	if completed == nil {
 		return imageGenerationResult{}, errors.New("stream closed before response.completed")
 	}
@@ -949,103 +903,7 @@ func imageUpstreamRequest(r *http.Request, index int) *http.Request {
 }
 
 func parseImageGenerationSSE(reader io.Reader) (imageGenerationResult, error) {
-	limited := &io.LimitedReader{R: reader, N: maxImageSSEBytes + 1}
-	scanner := bufio.NewScanner(limited)
-	scanner.Buffer(make([]byte, 64*1024), maxImageSSEEventBytes)
-	var dataLines []string
-	var doneItems []map[string]any
-	var completed map[string]any
-	events := 0
-	terminal := false
-	flush := func() error {
-		if len(dataLines) == 0 {
-			return nil
-		}
-		data := strings.TrimSpace(strings.Join(dataLines, "\n"))
-		dataLines = nil
-		if data == "" || data == "[DONE]" {
-			return nil
-		}
-		events++
-		if events > maxImageSSEEvents {
-			return errors.New("response exceeded event limit")
-		}
-		var event map[string]any
-		if err := json.Unmarshal([]byte(data), &event); err != nil {
-			return errors.New("malformed SSE event")
-		}
-		typeName, ok := event["type"].(string)
-		if !ok || typeName == "" {
-			return errors.New("SSE event missing type")
-		}
-		switch typeName {
-		case "response.failed", "error":
-			return errors.New(imageGenerationEventError(event, "image generation failed"))
-		case "response.incomplete":
-			reason := nestedString(event, "response", "incomplete_details", "reason")
-			if reason == "" {
-				reason = "unknown"
-			}
-			return fmt.Errorf("image generation response incomplete: %s", reason)
-		case "response.completed":
-			response, ok := event["response"].(map[string]any)
-			if !ok {
-				return errors.New("response.completed missing response")
-			}
-			completed = response
-			terminal = true
-		case "response.output_item.done":
-			if item, ok := event["item"].(map[string]any); ok && stringField(item, "type") == "image_generation_call" {
-				doneItems = append(doneItems, item)
-			}
-		}
-		return nil
-	}
-	for scanner.Scan() {
-		line := strings.TrimRight(scanner.Text(), "\r")
-		if line == "" {
-			if err := flush(); err != nil {
-				return imageGenerationResult{}, err
-			}
-			if terminal {
-				break
-			}
-			continue
-		}
-		if strings.HasPrefix(line, "data:") {
-			dataLines = append(dataLines, strings.TrimPrefix(strings.TrimPrefix(line, "data:"), " "))
-		}
-	}
-	if err := scanner.Err(); err != nil {
-		return imageGenerationResult{}, err
-	}
-	if limited.N <= 0 {
-		return imageGenerationResult{}, errors.New("response exceeded size limit")
-	}
-	if !terminal {
-		if err := flush(); err != nil {
-			return imageGenerationResult{}, err
-		}
-	}
-	if completed == nil {
-		return imageGenerationResult{}, errors.New("stream closed before response.completed")
-	}
-	if status := stringField(completed, "status"); status != "" && status != "completed" {
-		return imageGenerationResult{}, errors.New(imageGenerationResponseError(completed, fmt.Sprintf("completed response has status %q", status)))
-	}
-	items := imageOutputItems(completed["output"])
-	if len(items) == 0 {
-		items = doneItems
-	}
-	if len(items) == 0 {
-		return imageGenerationResult{}, errors.New("completed response did not contain an image")
-	}
-	image, err := decodeImageItem(items[0])
-	if err != nil {
-		return imageGenerationResult{}, err
-	}
-	usage, _ := completed["usage"].(map[string]any)
-	return imageGenerationResult{Image: image, Usage: usage, Metadata: imageResultMetadata(items[0], completed)}, nil
+	return parseImageSSEStream(reader, nil)
 }
 
 func imageGenerationEventError(event map[string]any, fallback string) string {

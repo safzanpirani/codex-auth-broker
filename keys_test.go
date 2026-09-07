@@ -10,6 +10,30 @@ import (
 	"time"
 )
 
+func TestClientAuthenticationKeepsAdmissionAndAttributionTogether(t *testing.T) {
+	reg := &keyRegistry{entries: []clientKey{{Name: "original", Key: "test-key", Role: roleClient}}}
+	p := &responsesProxy{keys: reg, requests: newRequestLogStore(10)}
+	r := httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
+	r.Header.Set("Authorization", "Bearer test-key")
+	r.Header.Set(brokerUserHeader, "test-user")
+	p.withClientAuthentication(func(w http.ResponseWriter, r *http.Request) {
+		id, allowed := p.authenticate(r)
+		if !allowed || id.Name != "original" {
+			t.Fatalf("unexpected admission: %+v, %v", id, allowed)
+		}
+		reg.mu.Lock()
+		reg.entries = []clientKey{{Name: "replacement", Key: "test-key", Role: roleClient}}
+		reg.mu.Unlock()
+		entry := p.beginRequestLog(r)
+		if entry.Entry.ClientName != "original" || entry.Entry.User != "test-user" {
+			t.Fatalf("attribution changed after rotation: %+v", entry.Entry)
+		}
+	})(httptest.NewRecorder(), r)
+	if id, allowed := p.authenticate(r); !allowed || id.Name != "replacement" {
+		t.Fatalf("next request did not see rotation: %+v, %v", id, allowed)
+	}
+}
+
 func TestParseKeysFile(t *testing.T) {
 	tests := []struct {
 		name    string
@@ -180,6 +204,37 @@ func TestNewKeyRegistryRejectsImplicitKeyCollision(t *testing.T) {
 	}
 	if _, err := newKeyRegistry("shared", path); err == nil {
 		t.Fatal("keys file reused the implicit admin key")
+	}
+}
+
+func TestKeyRegistryRejectsImplicitNameCollision(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "keys.json")
+	collision := []byte(`[{"name":"default","key":"client-key","role":"client"}]`)
+	if err := os.WriteFile(path, collision, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := newKeyRegistry("admin-key", path); err == nil {
+		t.Fatal("keys file reused the implicit client name")
+	}
+	if _, err := newKeyRegistry("", path); err != nil {
+		t.Fatalf("keys-only configuration rejected default name: %v", err)
+	}
+	if err := os.WriteFile(path, []byte(`[{"name":"backend","key":"original-key"}]`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	registry, err := newKeyRegistry("admin-key", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	registry.statInterval = 0
+	if err := os.WriteFile(path, collision, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := registry.resolve("client-key"); ok {
+		t.Fatal("reload accepted the implicit name collision")
+	}
+	if id, ok := registry.resolve("original-key"); !ok || id.Name != "backend" {
+		t.Fatal("invalid reload discarded the previous client")
 	}
 }
 

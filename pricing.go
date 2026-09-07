@@ -44,10 +44,11 @@ func longContextModelPricing(input, cached, cacheWrite, output float64) modelPri
 // Costs are estimates of equivalent API spend; ChatGPT-plan requests are not
 // actually billed per token.
 var defaultModelPricing = map[string]modelPricing{
-	"gpt-5.6":       longContextModelPricing(4.00, 0.40, 5.00, 20.00),
-	"gpt-5.6-sol":   longContextModelPricing(4.00, 0.40, 5.00, 20.00),
-	"gpt-5.6-terra": longContextModelPricing(2.00, 0.20, 2.50, 12.00),
-	"gpt-5.6-luna":  longContextModelPricing(0.20, 0.02, 0.25, 1.20),
+	"gpt-6-astra":   {InputPerM: 10.00, CachedPerM: 1.00, CacheWritePerM: 10.00, OutputPerM: 50.00},
+	"gpt-5.6":       longContextModelPricing(4.00, 0.40, 4.00, 20.00),
+	"gpt-5.6-sol":   longContextModelPricing(4.00, 0.40, 4.00, 20.00),
+	"gpt-5.6-terra": longContextModelPricing(2.00, 0.20, 2.00, 12.00),
+	"gpt-5.6-luna":  longContextModelPricing(0.20, 0.02, 0.20, 1.20),
 	"gpt-5.5":       longContextModelPricing(5.00, 0.50, 5.00, 30.00),
 	"gpt-5.4":       longContextModelPricing(2.50, 0.25, 2.50, 15.00),
 	"gpt-5.4-mini":  {InputPerM: 0.75, CachedPerM: 0.075, CacheWritePerM: 0.75, OutputPerM: 4.50},
@@ -109,22 +110,27 @@ func loadModelPricing() (map[string]modelPricing, error) {
 // snapshot suffix such as gpt-5.4-2026-03-05. Arbitrary prefix matching would
 // misprice distinct families such as gpt-5.4-pro and gpt-5.4-nano.
 func lookupModelPricing(table map[string]modelPricing, model string) (modelPricing, bool) {
+	_, pricing, ok := resolveModelPricing(table, model)
+	return pricing, ok
+}
+
+func resolveModelPricing(table map[string]modelPricing, model string) (string, modelPricing, bool) {
 	model = strings.TrimSpace(strings.ToLower(model))
 	if model == "" {
-		return modelPricing{}, false
+		return "", modelPricing{}, false
 	}
 	if pricing, ok := table[model]; ok {
-		return pricing, true
+		return model, pricing, true
 	}
-	bestLen := 0
+	bestName := ""
 	var best modelPricing
 	for candidate, pricing := range table {
-		if isDatedModelSnapshot(model, candidate) && len(candidate) > bestLen {
-			bestLen = len(candidate)
+		if isDatedModelSnapshot(model, candidate) && len(candidate) > len(bestName) {
+			bestName = candidate
 			best = pricing
 		}
 	}
-	return best, bestLen > 0
+	return bestName, best, bestName != ""
 }
 
 func isDatedModelSnapshot(model, candidate string) bool {
@@ -144,8 +150,21 @@ func isDatedModelSnapshot(model, candidate string) bool {
 // a subset of input tokens and billed at the cached rate. Returns nil when no
 // pricing is known or no token counts were reported.
 func estimateCostUSD(table map[string]modelPricing, model string, usage tokenUsage) *float64 {
+	return estimateCostUSDForTier(table, model, "", usage)
+}
+
+// estimateCostUSDForTier applies the public API-equivalent service-tier rate.
+// Fast requests use the "priority" wire value and cost twice the standard rate.
+func estimateCostUSDForTier(table map[string]modelPricing, model, serviceTier string, usage tokenUsage) *float64 {
 	pricing, ok := lookupModelPricing(table, model)
-	if !ok || (usage.InputTokens == nil && usage.OutputTokens == nil) {
+	if !ok {
+		return nil
+	}
+	return estimatePricedUsage(pricing, serviceTier, usage)
+}
+
+func estimatePricedUsage(pricing modelPricing, serviceTier string, usage tokenUsage) *float64 {
+	if usage.InputTokens == nil && usage.OutputTokens == nil {
 		return nil
 	}
 	var input, output, cached, cacheWrite float64
@@ -178,5 +197,26 @@ func estimateCostUSD(table map[string]modelPricing, model string, usage tokenUsa
 		cacheWrite*pricing.CacheWritePerM) * inputMultiplier
 	cost += output * pricing.OutputPerM * outputMultiplier
 	cost /= 1e6
+	if strings.EqualFold(strings.TrimSpace(serviceTier), "priority") || strings.EqualFold(strings.TrimSpace(serviceTier), "fast") {
+		cost *= 2
+	}
 	return &cost
+}
+
+// estimateAPICostUSDForTier restores public API cache-write and long-context
+// rates where Codex plan usage has pricing exceptions.
+func estimateAPICostUSDForTier(table map[string]modelPricing, model, serviceTier string, usage tokenUsage) *float64 {
+	name, pricing, ok := resolveModelPricing(table, model)
+	if !ok {
+		return nil
+	}
+	if name == "gpt-6-astra" || name == "gpt-5.6" || strings.HasPrefix(name, "gpt-5.6-") {
+		pricing.CacheWritePerM = pricing.InputPerM * 1.25
+	}
+	if name == "gpt-6-astra" {
+		pricing.LongContextThreshold = longContextThresholdTokens
+		pricing.LongContextInputMultiplier = 2
+		pricing.LongContextOutputMultiplier = 1.5
+	}
+	return estimatePricedUsage(pricing, serviceTier, usage)
 }

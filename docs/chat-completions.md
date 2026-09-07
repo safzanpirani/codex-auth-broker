@@ -140,10 +140,9 @@ Actual cache reads are returned in Chat Completions usage:
 For streams, request `stream_options.include_usage` to receive the final usage
 chunk.
 
-The public API's `prompt_cache_retention` and `prompt_cache_options` controls
-are not forwarded. The ChatGPT Codex OAuth endpoint rejects them and manages
-retention server-side. The broker records legacy retention intent as metadata
-only and preserves the cache key.
+The broker does not forward the public API's `prompt_cache_retention` control.
+It forwards `prompt_cache_options` only for GPT-6 Astra. The broker records
+legacy retention intent as metadata only and preserves the cache key.
 
 Prompt caching requires matching prefixes and is only observable on eligible
 prompts; a zero `cached_tokens` value on the first request is expected.

@@ -100,6 +100,8 @@ curl -fsS http://127.0.0.1:8317/v1/models
 Common model ids:
 
 ```text
+gpt-6-astra
+gpt-6-astra(max)
 gpt-5.5
 gpt-5.5(low)
 gpt-5.5(medium)
@@ -164,8 +166,8 @@ Responses endpoint: POST http://127.0.0.1:8317/v1/responses
 Models endpoint: GET http://127.0.0.1:8317/v1/models
 Dashboard: http://127.0.0.1:8317/dashboard
 API key: dummy, unless the broker owner gives you a real local broker key
-Primary model: gpt-5.5
-Reasoning: omit reasoning for off/default, or send reasoning.effort low/medium/high/xhigh (gpt-5.6 also accepts max)
+Primary model: gpt-6-astra
+Reasoning: omit reasoning for off/default, or send reasoning.effort low/medium/high/xhigh (GPT-6 Astra and gpt-5.6 also accept max)
 Prompt cache key: use a stable project key, for example "safzan-coding-agent"
 
 Use /v1/responses for this provider configuration. The broker also supports
@@ -240,7 +242,7 @@ low
 medium
 high
 xhigh
-max    (gpt-5.6 family only; gpt-5.4 and older reject it)
+max    (GPT-6 Astra and gpt-5.6 family only; gpt-5.4 and older reject it)
 ultra  (alias for max; wire-level "ultra" does not exist)
 ```
 
@@ -400,9 +402,10 @@ contents.
   continuation. `/v1/chat/completions` is available for Chat-only clients.
 - `prompt_cache_key` is preserved or injected so repeated long prompts can hit
   model-side prompt caching.
-- `prompt_cache_retention`, `prompt_cache_options`, max-token aliases,
-  `stream_options`, and `user` are stripped before forwarding because the Codex
-  backend rejects them.
+- `prompt_cache_retention`, max-token aliases, `stream_options`, and `user` are
+  stripped before forwarding because the Codex backend rejects them.
+- `prompt_cache_options` passes through for GPT-6 Astra and is stripped for
+  older models.
 - The broker never returns or exposes the Codex refresh token.
 
 ## Prompt Caching For Agents
@@ -429,13 +432,12 @@ back to a session id derived from the request, then to its configured constant
 (unset by default); sending your own stable key is still preferred, since it
 also makes dashboard rows easier to reason about.
 
-Do not send `prompt_cache_retention` or `prompt_cache_options`. Those controls
-belong to the public OpenAI Responses API; the ChatGPT Codex OAuth endpoint
-currently rejects both. The broker strips both controls before forwarding and
-preserves `prompt_cache_key` so the backend can apply its server-managed cache
-policy. OpenAI documents GPT-5.5 and GPT-5.4 as extended-retention models with
-entries retained for up to 24 hours. GPT-5.6 uses a newer policy with a
-30-minute minimum lifetime and possible longer retention.
+Do not send `prompt_cache_retention`. For GPT-6 Astra, send
+`prompt_cache_options` when you need its supported cache TTL. The broker strips
+that object for older models and preserves `prompt_cache_key` for all models.
+OpenAI documents GPT-5.5 and GPT-5.4 as extended-retention models with entries
+retained for up to 24 hours. GPT-5.6 uses a newer policy with a 30-minute
+minimum lifetime and possible longer retention.
 
 The response does not report the chosen retention policy. It reports only
 actual cache reads through `usage.input_tokens_details.cached_tokens`, so a

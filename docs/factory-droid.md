@@ -7,24 +7,23 @@ Use:
 ```text
 base_url: http://127.0.0.1:8317/v1
 api_key: dummy
-model: gpt-5.5(medium)
+model: gpt-6-astra(medium)
 provider: openai
 ```
 
 The proxy implements `/v1/responses`, which is the path Factory uses for the
 OpenAI custom-provider flow.
 
-Factory Droid and newer OpenAI SDKs can send fields that the ChatGPT Codex
-backend does not accept directly, including `prompt_cache_retention` and
-`prompt_cache_options`. The proxy strips those fields while preserving
-`prompt_cache_key`, so BYOK requests keep working and still get ordinary
-model-side prompt-cache affinity. The ChatGPT Codex backend applies retention
-server-side: GPT-5.5 and GPT-5.4 are documented as extended-retention models,
-while GPT-5.6 uses a newer minimum-TTL cache policy.
+Factory Droid and newer OpenAI SDKs can send fields that older models on the
+ChatGPT Codex backend do not accept directly. The proxy strips
+`prompt_cache_retention` for every model and strips `prompt_cache_options` for
+models before GPT-6 Astra. It preserves `prompt_cache_key`, so BYOK requests
+keep model-side prompt-cache affinity.
 
 ## Recommended Models
 
 ```text
+gpt-6-astra(max)
 gpt-5.5(low)
 gpt-5.5(medium)
 gpt-5.5(high)
@@ -36,7 +35,7 @@ gpt-5.3-codex
 ```
 
 The suffix is converted to `reasoning.effort` before the request is sent to
-Codex. The gpt-5.6 family additionally supports `(max)`; `(ultra)` is accepted
+Codex. GPT-6 Astra and the gpt-5.6 family support `(max)`; `(ultra)` is accepted
 as an alias and forwarded as `max` (the backend rejects wire-level `ultra`).
 
 ## Prompt Cache Check
