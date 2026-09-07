@@ -595,7 +595,11 @@ func optionalImageEnum(body map[string]any, key string, allowed ...string) (stri
 	return "", fmt.Errorf("unsupported %s %q", key, text)
 }
 
-func buildImageResponsesBody(req imageGenerationRequest) map[string]any {
+func (p *responsesProxy) imageBackingModel() string {
+	return valueOr(strings.TrimSpace(p.cfg.imageResponsesModel), imageResponsesModel)
+}
+
+func (p *responsesProxy) buildImageResponsesBody(req imageGenerationRequest) map[string]any {
 	tool := map[string]any{"type": "image_generation", "model": req.Model}
 	if req.Action == "edit" {
 		tool["action"] = "edit"
@@ -628,7 +632,7 @@ func buildImageResponsesBody(req imageGenerationRequest) map[string]any {
 		content = append(content, map[string]any{"type": "input_image", "image_url": imageDataURL(image)})
 	}
 	return map[string]any{
-		"model":        imageResponsesModel,
+		"model":        p.imageBackingModel(),
 		"instructions": imageGenerationInstructions,
 		"input": []any{map[string]any{
 			"role":    "user",
@@ -647,12 +651,13 @@ func (p *responsesProxy) generateOneImage(r *http.Request, imageReq imageGenerat
 		return imageGenerationResult{}, fail
 	}
 	defer release()
-	body := buildImageResponsesBody(imageReq)
+	body := p.buildImageResponsesBody(imageReq)
 	encoded, err := json.Marshal(body)
 	if err != nil {
 		return imageGenerationResult{}, &dispatchFailure{status: http.StatusBadRequest, message: "invalid image request body"}
 	}
-	info := requestInfo{Model: imageResponsesModel, NormalizedModel: imageResponsesModel, Stream: true}
+	model := p.imageBackingModel()
+	info := requestInfo{Model: model, NormalizedModel: model, Stream: true}
 	upstreamRequest := imageUpstreamRequest(r, index)
 	resp, fail := p.dispatchUpstream(r.Context(), encoded, info, body, upstreamRequest)
 	if fail != nil {
@@ -678,14 +683,15 @@ func (p *responsesProxy) streamOneImage(w http.ResponseWriter, r *http.Request, 
 		return
 	}
 	defer release()
-	body := buildImageResponsesBody(imageReq)
+	body := p.buildImageResponsesBody(imageReq)
 	encoded, err := json.Marshal(body)
 	if err != nil {
 		logEntry.markError(http.StatusBadRequest, "invalid image request body")
 		writeProxyError(w, http.StatusBadRequest, "invalid image request body")
 		return
 	}
-	info := requestInfo{Model: imageResponsesModel, NormalizedModel: imageResponsesModel, Stream: true}
+	model := p.imageBackingModel()
+	info := requestInfo{Model: model, NormalizedModel: model, Stream: true}
 	resp, fail := p.dispatchUpstream(r.Context(), encoded, info, body, imageUpstreamRequest(r, 0))
 	if fail != nil {
 		p.writeDispatchFailure(w, logEntry, fail)

@@ -519,6 +519,7 @@ Flags and equivalent environment variables:
 | `--request-log-file` | `CODEX_AUTH_BROKER_REQUEST_LOG_FILE` | `~/.codex-auth-broker/requests.jsonl` (empty disables) |
 | n/a | `CODEX_AUTH_BROKER_PRICING` | built-in per-model USD/1M-token table |
 | `--models` | `CODEX_AUTH_BROKER_MODELS` | empty; proxies the live Codex model list |
+| `--image-responses-model` | `CODEX_AUTH_BROKER_IMAGE_RESPONSES_MODEL` | `gpt-5.6-sol`; model used to invoke image tools |
 | `--refresh-skew` | `CODEX_AUTH_BROKER_REFRESH_SKEW` | `10m` |
 | `--timeout` | none | `10m` |
 

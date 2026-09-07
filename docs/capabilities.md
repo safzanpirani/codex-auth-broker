@@ -108,6 +108,12 @@ image tool. `gpt-image-2` is the default image model. Existing options include
 images, and editing masks. Results use the Images API JSON/SSE shape. See
 the README image examples for supported limits and parameters.
 
+The backing Responses model defaults to `gpt-5.6-sol`. If an account rejects
+that model, set `--image-responses-model gpt-5.4` or
+`CODEX_AUTH_BROKER_IMAGE_RESPONSES_MODEL=gpt-5.4`. This changes the model that
+invokes the tool; the requested image model remains `gpt-image-2`.
+`/v1/capabilities` reports the configured backing model as `responses_model`.
+
 Media models are described by `/v1/capabilities`. `/v1/models` continues to
 return the Codex text/reasoning catalog for Factory Droid and Pi, so those
 clients do not accidentally select an image or voice model for text calls.

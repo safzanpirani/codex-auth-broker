@@ -200,6 +200,32 @@ func TestImageGenerationsDefaultsAndOptionForwarding(t *testing.T) {
 	}
 }
 
+func TestImageBackingModelOverride(t *testing.T) {
+	for _, stream := range []bool{false, true} {
+		proxy, _ := testImageProxy(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			var body map[string]any
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+				t.Error(err)
+				return
+			}
+			if body["model"] != "gpt-5.4" || r.Header.Get(codexRoutingHintHeader) != "model=gpt-5.4" {
+				t.Error("backing model and routing hint must use the configured model")
+			}
+			tool := body["tools"].([]any)[0].(map[string]any)
+			if tool["model"] != defaultImageModel {
+				t.Error("image model changed with backing model")
+			}
+			_, _ = io.WriteString(w, imageSSE("aGVsbG8=", "", nil))
+		}))
+		proxy.cfg.imageResponsesModel = "gpt-5.4"
+		payload, _ := json.Marshal(map[string]any{"prompt": "synthetic test", "stream": stream})
+		got := performImageRequest(proxy, string(payload), true)
+		if got.Code != http.StatusOK {
+			t.Fatalf("stream=%v status=%d", stream, got.Code)
+		}
+	}
+}
+
 func TestImageGenerationsRequestLogIsMetadataOnly(t *testing.T) {
 	proxy, _ := testImageProxy(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_, _ = io.WriteString(w, imageSSE("aGVsbG8=", "secret revision", nil))

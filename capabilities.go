@@ -24,7 +24,7 @@ func (p *responsesProxy) handleCapabilities(w http.ResponseWriter, r *http.Reque
 		"capabilities": []map[string]any{
 			{"id": "responses", "status": "supported", "endpoints": []string{"POST /v1/responses", "GET /v1/responses", "POST /v1/chat/completions"}, "models_endpoint": "/v1/models"},
 			{"id": "compaction", "status": "experimental", "endpoints": []string{"POST /v1/responses/compact"}, "note": "Native Codex route; availability depends on the upstream rollout."},
-			{"id": "images", "status": "supported", "endpoints": []string{"POST /v1/images/generations", "POST /v1/images/edits"}, "default_model": "gpt-image-2", "transport": "responses_image_generation_tool"},
+			{"id": "images", "status": "supported", "endpoints": []string{"POST /v1/images/generations", "POST /v1/images/edits"}, "default_model": "gpt-image-2", "responses_model": p.imageBackingModel(), "transport": "responses_image_generation_tool"},
 			{"id": "live", "status": "experimental", "endpoints": []string{"POST /v1/realtime/calls", "POST /v1/live", "GET /v1/live/{call_id}", "GET /v1/realtime?call_id=..."}, "default_model": liveModel, "transport": "webrtc", "events": "native_gpt_live", "standalone_websocket": false, "note": "Requires account access to Codex GPT-Live. GA call creation shape; native GPT-Live session fields and events."},
 			{"id": "search", "status": "experimental", "endpoints": []string{"POST /v1/alpha/search"}},
 			{"id": "embeddings", "status": "unavailable", "reason": "No verified Codex subscription endpoint."},

@@ -11,6 +11,12 @@ POST /v1/images/edits         multipart/form-data
 Keep the broker on localhost or a private network such as Tailscale. A broker
 client key is not an OpenAI API key and is never forwarded as Codex OAuth.
 
+The image tool is invoked through `gpt-5.6-sol` by default. If that Responses
+model is unavailable to an account, choose an available image-capable model
+with `--image-responses-model` or `CODEX_AUTH_BROKER_IMAGE_RESPONSES_MODEL`.
+The requested image model stays unchanged. Account access to both models is
+required; the broker does not substitute another image model automatically.
+
 ## Generation
 
 ```bash

@@ -71,6 +71,7 @@ type config struct {
 	usageURL             string
 	alphaSearchURL       string
 	models               []string
+	imageResponsesModel  string
 	timeout              time.Duration
 	shutdownTimeout      time.Duration
 	requestLogLimit      int
@@ -283,6 +284,7 @@ func loadConfig(args []string) (config, error) {
 		alphaSearchURL:       envOr("CODEX_AUTH_BROKER_ALPHA_SEARCH_URL", defaultAlphaSearchURL),
 		refreshSkew:          defaultRefreshSkew,
 		models:               nil,
+		imageResponsesModel:  envOr("CODEX_AUTH_BROKER_IMAGE_RESPONSES_MODEL", imageResponsesModel),
 		timeout:              defaultHTTPTimeout,
 		shutdownTimeout:      defaultShutdownTimeout,
 		requestLogLimit:      defaultRequestLogLimit,
@@ -345,6 +347,7 @@ func loadConfig(args []string) (config, error) {
 	fs.StringVar(&cfg.alphaSearchURL, "alpha-search-url", cfg.alphaSearchURL, "ChatGPT Codex standalone search endpoint")
 	fs.StringVar(&cfg.upstreamOriginator, "upstream-originator", cfg.upstreamOriginator, "originator header sent to Codex upstream; some models are gated to codex_cli_rs")
 	fs.StringVar(&modelsValue, "models", modelsValue, "comma-separated model ids to serve statically from /v1/models; empty proxies the live Codex model list")
+	fs.StringVar(&cfg.imageResponsesModel, "image-responses-model", cfg.imageResponsesModel, "Responses model used to invoke the image-generation tool")
 	fs.StringVar(&skewValue, "refresh-skew", skewValue, "refresh access token when it expires within this duration")
 	fs.StringVar(&timeoutValue, "timeout", timeoutValue, "upstream request timeout")
 	fs.StringVar(&shutdownValue, "shutdown-timeout", shutdownValue, "time to drain requests and WebSocket sessions on shutdown; 0 cancels immediately")
@@ -437,6 +440,10 @@ func loadConfig(args []string) (config, error) {
 	if cfg.timeout < 0 {
 		return cfg, errors.New("timeout must be zero or greater")
 	}
+	cfg.imageResponsesModel = strings.TrimSpace(cfg.imageResponsesModel)
+	if cfg.imageResponsesModel == "" {
+		return cfg, errors.New("image-responses-model must not be empty")
+	}
 	cfg.shutdownTimeout, err = time.ParseDuration(shutdownValue)
 	if err != nil {
 		return cfg, fmt.Errorf("invalid shutdown-timeout: %w", err)
@@ -487,6 +494,7 @@ Common flags:
   --prompt-cache-retention Record legacy retention intent; never forward it upstream
   --request-log-limit      In-memory dashboard request history size
   --shutdown-timeout       Drain requests and WebSocket sessions on shutdown (default 30s)
+  --image-responses-model  Responses model that invokes image tools (default gpt-5.6-sol)
   --request-log-max-bytes   Maximum persisted log bytes; 0 disables the cap
   --request-log-file       JSONL file for persistent request metadata; empty disables
   --max-concurrent         Cap on simultaneous upstream Codex calls (default 8; 0 = unlimited)

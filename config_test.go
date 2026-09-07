@@ -10,6 +10,21 @@ import (
 	"time"
 )
 
+func TestImageBackingModelConfiguration(t *testing.T) {
+	t.Setenv("CODEX_AUTH_BROKER_IMAGE_RESPONSES_MODEL", "gpt-5.4")
+	cfg, err := loadConfig(nil)
+	if err != nil || cfg.imageResponsesModel != "gpt-5.4" {
+		t.Fatalf("environment config: %v", err)
+	}
+	cfg, err = loadConfig([]string{"--image-responses-model", "gpt-5.5"})
+	if err != nil || cfg.imageResponsesModel != "gpt-5.5" {
+		t.Fatalf("flag config: %v", err)
+	}
+	if _, err := loadConfig([]string{"--image-responses-model", " "}); err == nil {
+		t.Fatal("blank backing model accepted")
+	}
+}
+
 func TestShutdownTimeoutConfiguration(t *testing.T) {
 	for _, test := range []struct {
 		name    string
