@@ -24,6 +24,11 @@ const (
 	// authErrorCooldown briefly benches an account whose token refresh fails so
 	// the pool rotates past it instead of hammering a broken credential.
 	authErrorCooldown = 2 * time.Minute
+	// probeInterval bounds how often a fully benched pool lets one request reach
+	// upstream anyway. A cooldown is a prediction, not a fact: a spurious 429 or
+	// a reset value that overshoots would otherwise bench every account for the
+	// whole window — up to a week — long after the limit cleared upstream.
+	probeInterval = 5 * time.Minute
 )
 
 var errAllCoolingDown = errors.New("all Codex accounts are cooling down")
@@ -36,6 +41,7 @@ type account struct {
 
 	mu            sync.Mutex
 	cooldownUntil time.Time
+	nextProbe     time.Time
 }
 
 func (a *account) available(now time.Time) bool {
@@ -44,12 +50,40 @@ func (a *account) available(now time.Time) bool {
 	return !a.cooldownUntil.After(now)
 }
 
-func (a *account) cool(until time.Time, _ string) {
+func (a *account) cool(now, until time.Time, _ string) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	if until.After(a.cooldownUntil) {
 		a.cooldownUntil = until
 	}
+	if next := now.Add(probeInterval); next.After(a.nextProbe) {
+		a.nextProbe = next
+	}
+}
+
+// probeDue reports whether a cooling account may be tried anyway, and reserves
+// the next probe slot when it is. One request per probeInterval reaches upstream
+// so a cooldown that no longer matches reality is corrected by evidence.
+func (a *account) probeDue(now time.Time) bool {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if !a.cooldownUntil.After(now) {
+		return false
+	}
+	if a.nextProbe.After(now) {
+		return false
+	}
+	a.nextProbe = now.Add(probeInterval)
+	return true
+}
+
+// clearCooldown releases an account after a request it served succeeded, which
+// proves the recorded cooldown no longer reflects upstream.
+func (a *account) clearCooldown() {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.cooldownUntil = time.Time{}
+	a.nextProbe = time.Time{}
 }
 
 // accountPool holds the ordered set of Codex accounts. Selection is sticky:
@@ -88,6 +122,16 @@ func (p *accountPool) pick(now time.Time) (*account, error) {
 	for i := 0; i < n; i++ {
 		idx := (p.active + i) % n
 		if p.accounts[idx].available(now) {
+			p.active = idx
+			return p.accounts[idx], nil
+		}
+	}
+	// Every account is cooling down. Let one through as a probe when its slot is
+	// due, so a stale cooldown clears within probeInterval instead of standing
+	// until the recorded window expires.
+	for i := 0; i < n; i++ {
+		idx := (p.active + i) % n
+		if p.accounts[idx].probeDue(now) {
 			p.active = idx
 			return p.accounts[idx], nil
 		}

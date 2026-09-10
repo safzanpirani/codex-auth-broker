@@ -130,7 +130,7 @@ func (p *responsesProxy) dialResponsesWebSocket(ctx context.Context, r *http.Req
 			if ctx.Err() != nil {
 				return nil, nil, nil, ctx.Err()
 			}
-			acct.cool(time.Now().Add(authErrorCooldown), "auth error: "+err.Error())
+			acct.cool(time.Now(), time.Now().Add(authErrorCooldown), "auth error: "+err.Error())
 			lastErr = err
 			continue
 		}
@@ -141,6 +141,7 @@ func (p *responsesProxy) dialResponsesWebSocket(ctx context.Context, r *http.Req
 			CompressionMode: websocket.CompressionContextTakeover,
 		})
 		if err == nil {
+			acct.clearCooldown()
 			return conn, response, acct, nil
 		}
 		lastResponse, lastErr = response, err
@@ -148,8 +149,9 @@ func (p *responsesProxy) dialResponsesWebSocket(ctx context.Context, r *http.Req
 			break
 		}
 		body, _ := io.ReadAll(io.LimitReader(response.Body, 64*1024))
-		until, window, source := deriveCooldown(response, body, time.Now())
-		acct.cool(until, window)
+		dialNow := time.Now()
+		until, window, source := deriveCooldown(response, body, dialNow)
+		acct.cool(dialNow, until, window)
 		log.Printf("codex account %s websocket handshake rate-limited window=%s source=%s; rotating (%d/%d)", acct.label, window, source, attempt+1, n)
 	}
 	return nil, lastResponse, nil, lastErr
@@ -294,8 +296,9 @@ func (t *webSocketTurnTracker) observeServerEvent(payload []byte) bool {
 	rateLimited := kind == "error" && webSocketEventStatus(event) == http.StatusTooManyRequests
 	if rateLimited && t.account != nil {
 		response := &http.Response{StatusCode: http.StatusTooManyRequests, Header: webSocketEventHeaders(event)}
-		until, window, source := deriveCooldown(response, payload, time.Now())
-		t.account.cool(until, window)
+		eventNow := time.Now()
+		until, window, source := deriveCooldown(response, payload, eventNow)
+		t.account.cool(eventNow, until, window)
 		log.Printf("codex account %s websocket rate-limited window=%s source=%s; reconnect required", t.account.label, window, source)
 	}
 	t.mu.Lock()

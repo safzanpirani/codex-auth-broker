@@ -29,7 +29,7 @@ func TestPoolStickyThenRotate(t *testing.T) {
 	}
 
 	// Cool the active account: next pick rotates to a different one.
-	a1.cool(now.Add(time.Hour), "5h")
+	a1.cool(now, now.Add(time.Hour), "5h")
 	a3, err := pool.pick(now)
 	if err != nil {
 		t.Fatalf("pick after cool: %v", err)
@@ -43,7 +43,7 @@ func TestPoolAllCoolingDown(t *testing.T) {
 	pool := testPool(2)
 	now := time.Now()
 	for _, a := range pool.accounts {
-		a.cool(now.Add(2*time.Hour), "weekly")
+		a.cool(now, now.Add(2*time.Hour), "weekly")
 	}
 	if _, err := pool.pick(now); err != errAllCoolingDown {
 		t.Fatalf("want errAllCoolingDown, got %v", err)
@@ -51,6 +51,38 @@ func TestPoolAllCoolingDown(t *testing.T) {
 	// After the window passes, the pool recovers.
 	if _, err := pool.pick(now.Add(3 * time.Hour)); err != nil {
 		t.Fatalf("expected recovery after cooldown, got %v", err)
+	}
+}
+
+func TestPoolProbesThroughStaleCooldown(t *testing.T) {
+	pool := testPool(1)
+	now := time.Now()
+	acct := pool.accounts[0]
+
+	// A week-long cooldown, as a weekly reset header would produce.
+	acct.cool(now, now.Add(7*24*time.Hour), "weekly")
+	if _, err := pool.pick(now.Add(time.Minute)); err != errAllCoolingDown {
+		t.Fatalf("want errAllCoolingDown inside the probe interval, got %v", err)
+	}
+
+	// Once the probe slot is due, one request gets through to re-check upstream.
+	probed, err := pool.pick(now.Add(probeInterval))
+	if err != nil {
+		t.Fatalf("expected a probe pick, got %v", err)
+	}
+	if probed != acct {
+		t.Fatalf("probe picked the wrong account: %s", probed.label)
+	}
+
+	// The slot is consumed: further requests keep failing fast until the next one.
+	if _, err := pool.pick(now.Add(probeInterval + time.Second)); err != errAllCoolingDown {
+		t.Fatalf("want errAllCoolingDown after the probe slot is used, got %v", err)
+	}
+
+	// A successful probe clears the stale cooldown for everyone.
+	probed.clearCooldown()
+	if _, err := pool.pick(now.Add(probeInterval + 2*time.Second)); err != nil {
+		t.Fatalf("expected recovery after a successful probe, got %v", err)
 	}
 }
 

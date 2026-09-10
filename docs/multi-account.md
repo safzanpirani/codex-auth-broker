@@ -124,7 +124,17 @@ weekly limit → 7 days, a usage or 5-hour limit → 5 hours, anything else → 
 seconds. Every value is clamped to `[30s, 8d]`.
 
 **All accounts cooling down.** The broker returns `429` to the client with a
-`Retry-After` header pointing at the soonest reset across the pool.
+`Retry-After` header pointing at the soonest reset across the pool, capped at
+`probeInterval` (5 minutes) so a client is never parked past the next probe.
+
+**Probing out of a stale cooldown.** A cooldown is a prediction about upstream,
+not a fact, and a bad one is expensive: a single misread weekly reset would
+bench the pool for days after the limit cleared. So `pick` falls back to a probe
+when nothing is available — every `probeInterval`, one request is allowed
+through to the account whose slot is due. A non-error response clears that
+account's cooldown outright; another `429` re-cools it and reserves the next
+slot. Requests arriving between probes still fail locally in microseconds, so
+upstream never sees more than one probe per interval per account.
 
 **Auth errors.** If an account's token refresh fails, it is benched briefly
 (2 minutes) and the pool rotates past it, so one broken login does not take the

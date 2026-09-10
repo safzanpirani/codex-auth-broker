@@ -303,7 +303,8 @@ func (p *responsesProxy) dispatchUpstream(ctx context.Context, encoded []byte, i
 		if ctx.Err() != nil {
 			return nil, &dispatchFailure{status: http.StatusRequestTimeout, message: "request canceled"}
 		}
-		acct, err := p.pool.pick(time.Now())
+		now := time.Now()
+		acct, err := p.pool.pick(now)
 		if err != nil {
 			break // every account is cooling down
 		}
@@ -312,7 +313,7 @@ func (p *responsesProxy) dispatchUpstream(ctx context.Context, encoded []byte, i
 			if ctx.Err() != nil {
 				return nil, &dispatchFailure{status: http.StatusRequestTimeout, message: "request canceled"}
 			}
-			acct.cool(time.Now().Add(authErrorCooldown), "auth error: "+err.Error())
+			acct.cool(now, now.Add(authErrorCooldown), "auth error: "+err.Error())
 			lastAuthErr = err
 			log.Printf("codex account %s auth failed: %v; rotating", acct.label, err)
 			continue
@@ -330,12 +331,18 @@ func (p *responsesProxy) dispatchUpstream(ctx context.Context, encoded []byte, i
 		if resp.StatusCode == http.StatusTooManyRequests {
 			rlBody, _ := io.ReadAll(io.LimitReader(resp.Body, 64*1024))
 			resp.Body.Close()
-			until, window, source := deriveCooldown(resp, rlBody, time.Now())
-			acct.cool(until, window)
+			rlNow := time.Now()
+			until, window, source := deriveCooldown(resp, rlBody, rlNow)
+			acct.cool(rlNow, until, window)
 			log.Printf("codex account %s hit rate limit window=%s source=%s cooling_until=%s; rotating (%d/%d)",
 				acct.label, window, source, until.UTC().Format(time.RFC3339), attempt+1, n)
 			lastRateLimit = &dispatchFailure{status: http.StatusTooManyRequests, body: rlBody, retryAfter: until, window: window}
 			continue
+		}
+		if resp.StatusCode < http.StatusBadRequest {
+			// Upstream served it, so any cooldown this account still carries was
+			// a bad prediction: release it rather than bench the pool further.
+			acct.clearCooldown()
 		}
 		return resp, nil
 	}
@@ -383,7 +390,14 @@ func (p *responsesProxy) buildUpstreamRequest(ctx context.Context, encoded []byt
 
 func (p *responsesProxy) writeDispatchFailure(w http.ResponseWriter, logEntry *pendingRequestLog, fail *dispatchFailure) {
 	if !fail.retryAfter.IsZero() {
-		if secs := int(time.Until(fail.retryAfter).Seconds()); secs > 0 {
+		wait := time.Until(fail.retryAfter)
+		// Never advertise longer than the probe interval: the pool re-checks
+		// upstream that often, so a client told to wait out a week-long window
+		// would stay parked long after the cooldown turned out to be wrong.
+		if fail.status == http.StatusTooManyRequests && wait > probeInterval {
+			wait = probeInterval
+		}
+		if secs := int(wait.Seconds()); secs > 0 {
 			w.Header().Set("Retry-After", strconv.Itoa(secs))
 		}
 	}

@@ -96,7 +96,7 @@ func TestResponsesWebSocketCoolingPoolReturnsRetryAfter(t *testing.T) {
 			pool := newAccountPool([]string{writeWebSocketTestAuth(t, "acct_one"), writeWebSocketTestAuth(t, "acct_two")}, time.Minute, client)
 			if preCooled {
 				for _, account := range pool.accounts {
-					account.cool(time.Now().Add(2*time.Minute), "test")
+					account.cool(time.Now(), time.Now().Add(2*time.Minute), "test")
 				}
 			}
 			proxy := &responsesProxy{

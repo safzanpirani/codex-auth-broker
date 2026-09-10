@@ -166,7 +166,7 @@ func TestLoadPersistedEntriesDisabledDoesNotReadFile(t *testing.T) {
 
 func TestHealthOmitsAccountMetadata(t *testing.T) {
 	pool := newAccountPool([]string{"/private/sentinel-account/auth.json"}, time.Minute, http.DefaultClient)
-	pool.accounts[0].cool(time.Now().Add(time.Minute), "sentinel-cooldown-reason")
+	pool.accounts[0].cool(time.Now(), time.Now().Add(time.Minute), "sentinel-cooldown-reason")
 	proxy := &responsesProxy{pool: pool}
 	recorder := httptest.NewRecorder()
 	proxy.handleHealth(recorder, httptest.NewRequest(http.MethodGet, "/healthz", nil))

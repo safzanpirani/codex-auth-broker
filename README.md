@@ -579,7 +579,15 @@ falls back on the response wording — "weekly" → 7 days, a usage/5-hour limit
 5 hours, otherwise 60 seconds — clamped to `[30s, 8d]`.
 
 **When every account is cooling down.** The broker returns `429` with a
-`Retry-After` header pointing at the soonest reset across the pool.
+`Retry-After` header, capped at 5 minutes.
+
+**Stale cooldowns self-heal.** A cooldown is a prediction, so the broker never
+trusts one indefinitely. While every account is benched, one request every 5
+minutes is still sent upstream as a probe; if it succeeds, that account's
+cooldown is cleared immediately. A spurious `429`, or a weekly reset value that
+overshoots, therefore costs about 5 minutes rather than the whole window. The
+remaining requests still fail fast locally, so upstream sees at most one probe
+per interval.
 
 For Responses WebSockets, account selection is pinned for the life of a connection. A
 `429` during the opening handshake rotates transparently. A `429` event after

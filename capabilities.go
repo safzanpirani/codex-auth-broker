@@ -79,7 +79,7 @@ func (p *responsesProxy) postSubscription(ctx context.Context, endpoint string, 
 			if ctx.Err() != nil {
 				return nil, nil, &dispatchFailure{status: http.StatusRequestTimeout, message: "request canceled"}
 			}
-			acct.cool(time.Now().Add(authErrorCooldown), "auth")
+			acct.cool(time.Now(), time.Now().Add(authErrorCooldown), "auth")
 			lastFailure = &dispatchFailure{status: http.StatusBadGateway, message: "Codex authentication failed"}
 			continue
 		}
@@ -99,13 +99,16 @@ func (p *responsesProxy) postSubscription(ctx context.Context, endpoint string, 
 			return nil, nil, &dispatchFailure{status: http.StatusBadGateway, message: "subscription request failed; not retried"}
 		}
 		if resp.StatusCode != http.StatusTooManyRequests {
+			if resp.StatusCode < http.StatusBadRequest {
+				acct.clearCooldown()
+			}
 			return resp, acct, nil
 		}
 		_, failure := readCapabilityResponse(resp, 64*1024)
 		if failure.status != http.StatusTooManyRequests {
 			return nil, nil, failure
 		}
-		acct.cool(failure.retryAfter, "rate limit")
+		acct.cool(time.Now(), failure.retryAfter, "rate limit")
 		lastFailure = failure
 	}
 	if lastFailure != nil {
