@@ -856,7 +856,7 @@ func removeUnsupportedParams(body map[string]any, model string) {
 	delete(body, "maxCompletionTokens")
 	delete(body, "prompt_cache_retention")
 	delete(body, "promptCacheRetention")
-	if model != "gpt-6-astra" {
+	if !isGPT6Model(model) {
 		delete(body, "prompt_cache_options")
 	} else if _, exists := body["prompt_cache_options"]; !exists {
 		if options, ok := body["promptCacheOptions"]; ok {

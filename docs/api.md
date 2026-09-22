@@ -138,7 +138,7 @@ Compatibility normalizations:
 - `gpt-5.4-mini(high)` becomes `model: "gpt-5.4-mini"` and
   `reasoning.effort: "high"`.
 - `gpt-5.6-sol(max)` becomes `model: "gpt-5.6-sol"` and
-  `reasoning.effort: "max"` (GPT-6 Astra and the gpt-5.6 family support `max`;
+  `reasoning.effort: "max"` (the GPT-6 family and the gpt-5.6 family support `max`;
   older models reject it).
 - `gpt-5.6-sol(ultra)` is forwarded as `reasoning.effort: "max"` — the Codex
   backend rejects wire-level `ultra`; in the official CLI it means max effort
@@ -148,7 +148,7 @@ Compatibility normalizations:
 - Native client reasoning, such as Pi sending `reasoning.effort`, is preserved
   and shown in dashboard request history.
 - GPT-6 Astra `configuration_update` input items and `async: true` function or
-  custom tools pass through unchanged. Astra `prompt_cache_options` also pass
+  custom tools pass through unchanged. GPT-6 family `prompt_cache_options` also pass
   through so clients can use the model's cache TTL controls.
 - WebSocket clients can send `response.steer` during an Astra response. The
   broker forwards steering acknowledgements, continuations, and terminal events
@@ -243,8 +243,8 @@ Current boundaries:
 - Sampling fields accepted by the Responses backend are forwarded. Chat-only
   controls with no Codex Responses equivalent, including max-token aliases,
   are ignored or stripped.
-- `prompt_cache_retention` is recorded as intent and stripped. GPT-6 Astra
-  receives `prompt_cache_options`; older models do not because the ChatGPT
+- `prompt_cache_retention` is recorded as intent and stripped. The GPT-6
+  family receives `prompt_cache_options`; older models do not because the ChatGPT
   Codex endpoint rejects the object for them.
 
 See [`chat-completions.md`](chat-completions.md) for examples.

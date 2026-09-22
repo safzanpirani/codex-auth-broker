@@ -93,6 +93,8 @@ http://127.0.0.1:8317/v1
 
 ```text
 gpt-6-astra(max)
+gpt-6-sol(max)
+gpt-6-luna(high)
 gpt-5.5(low)
 gpt-5.5(medium)
 gpt-5.5(high)
@@ -103,8 +105,8 @@ gpt-5.4-mini
 gpt-5.3-codex
 ```
 
-Effort suffixes accept `low`/`medium`/`high`/`xhigh`, plus `max` on GPT-6 Astra
-and the gpt-5.6 family (`ultra` is accepted as an alias and forwarded as `max`).
+Effort suffixes accept `low`/`medium`/`high`/`xhigh`, plus `max` on the GPT-6
+family (Astra, Sol, Luna) and the gpt-5.6 family (`ultra` is accepted as an alias and forwarded as `max`).
 
 The API key can be any dummy value unless you start the broker with
 `--api-key`.
@@ -244,7 +246,8 @@ unset by default: with no key the backend hashes the prefix unscoped, which is
 strictly better than a colliding one. Set `--prompt-cache-key <value>` only when
 a fleet of otherwise-anonymous clients really should share one cache bucket.
 
-The broker strips the legacy `prompt_cache_retention` field. For GPT-6 Astra,
+The broker strips the legacy `prompt_cache_retention` field. For the GPT-6
+family (Astra, Sol, Luna),
 the broker forwards `prompt_cache_options` so clients can request the current
 cache TTL. It strips that object for older models because the ChatGPT Codex
 OAuth endpoint rejects it. The broker preserves `prompt_cache_key` for every
@@ -306,8 +309,8 @@ It shows:
   because Codex does not apply the public API's cache-write multiplier.
   GPT-5.6, GPT-5.5, and GPT-5.4 requests above
   272,000 input tokens apply the published premium to the full request: 2x
-  input and 1.5x output. The broker does not apply that premium to GPT-6 Astra
-  Codex traffic. Fast mode uses the official 2x price multiplier. Unit-rate
+  input and 1.5x output. The broker does not apply that premium to GPT-6
+  family Codex traffic. Fast mode uses the official 2x price multiplier. Unit-rate
   overrides retain this model policy.
 - Filtering, pause/resume, manual refresh, and clear-history controls.
 
@@ -426,6 +429,8 @@ Recommended model ids:
 
 ```text
 gpt-6-astra
+gpt-6-sol
+gpt-6-luna
 gpt-5.5
 gpt-5.4
 gpt-5.4-mini

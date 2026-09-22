@@ -75,6 +75,8 @@ func TestNormalizeFactoryModel(t *testing.T) {
 		{input: "gpt-6-astra(max)", model: "gpt-6-astra", effort: "max"},
 		{input: "gpt-6-astra-ultra", model: "gpt-6-astra", effort: "max"},
 		{input: "gpt-6-astra-non-reasoning", model: "gpt-6-astra", effort: ""},
+		{input: "gpt-6-sol(max)", model: "gpt-6-sol", effort: "max"},
+		{input: "gpt-6-luna-ultra", model: "gpt-6-luna", effort: "max"},
 	}
 	for _, test := range tests {
 		model, effort := normalizeFactoryModel(test.input)
@@ -877,5 +879,15 @@ func TestHandlersRequireBearerKey(t *testing.T) {
 				t.Fatalf("valid key rejected with 401, body = %s", recorder.Body.String())
 			}
 		})
+	}
+}
+
+func TestNormalizeResponsesBodyPreservesGPT6PromptCacheOptions(t *testing.T) {
+	for _, model := range []string{"gpt-6-sol(high)", "gpt-6-luna", "gpt-6-astra-2026-09-08"} {
+		body := map[string]any{"model": model, "input": "hello", "prompt_cache_options": map[string]any{"ttl": "30m"}}
+		normalizeResponsesBody(body, config{}, httptest.NewRequest(http.MethodPost, "/v1/responses", nil))
+		if _, ok := body["prompt_cache_options"]; !ok {
+			t.Fatalf("%s: prompt_cache_options should be preserved", model)
+		}
 	}
 }

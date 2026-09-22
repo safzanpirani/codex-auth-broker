@@ -44,7 +44,11 @@ func longContextModelPricing(input, cached, cacheWrite, output float64) modelPri
 // Costs are estimates of equivalent API spend; ChatGPT-plan requests are not
 // actually billed per token.
 var defaultModelPricing = map[string]modelPricing{
-	"gpt-6-astra":   {InputPerM: 10.00, CachedPerM: 1.00, CacheWritePerM: 10.00, OutputPerM: 50.00},
+	"gpt-6-astra": {InputPerM: 10.00, CachedPerM: 1.00, CacheWritePerM: 10.00, OutputPerM: 50.00},
+	// gpt-6-sol and gpt-6-luna reuse gpt-5.6-sol and gpt-5.6-luna prices until
+	// OpenAI publishes their list prices.
+	"gpt-6-sol":     longContextModelPricing(4.00, 0.40, 4.00, 20.00),
+	"gpt-6-luna":    longContextModelPricing(0.20, 0.02, 0.20, 1.20),
 	"gpt-5.6":       longContextModelPricing(4.00, 0.40, 4.00, 20.00),
 	"gpt-5.6-sol":   longContextModelPricing(4.00, 0.40, 4.00, 20.00),
 	"gpt-5.6-terra": longContextModelPricing(2.00, 0.20, 2.00, 12.00),
@@ -210,13 +214,19 @@ func estimateAPICostUSDForTier(table map[string]modelPricing, model, serviceTier
 	if !ok {
 		return nil
 	}
-	if name == "gpt-6-astra" || name == "gpt-5.6" || strings.HasPrefix(name, "gpt-5.6-") {
+	if isGPT6Model(name) || name == "gpt-5.6" || strings.HasPrefix(name, "gpt-5.6-") {
 		pricing.CacheWritePerM = pricing.InputPerM * 1.25
 	}
-	if name == "gpt-6-astra" {
+	if isGPT6Model(name) {
 		pricing.LongContextThreshold = longContextThresholdTokens
 		pricing.LongContextInputMultiplier = 2
 		pricing.LongContextOutputMultiplier = 1.5
 	}
 	return estimatePricedUsage(pricing, serviceTier, usage)
+}
+
+// isGPT6Model reports whether model belongs to the GPT-6 family (gpt-6-astra,
+// gpt-6-sol, gpt-6-luna and their dated snapshots).
+func isGPT6Model(model string) bool {
+	return model == "gpt-6" || strings.HasPrefix(model, "gpt-6-")
 }

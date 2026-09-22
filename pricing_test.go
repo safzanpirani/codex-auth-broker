@@ -290,3 +290,19 @@ func TestLoadModelPricingOverrideRejectsInvalidValues(t *testing.T) {
 		})
 	}
 }
+
+func TestLookupModelPricingGPT6Family(t *testing.T) {
+	cases := map[string]float64{"gpt-6-astra": 10.00, "gpt-6-sol": 4.00, "gpt-6-luna": 0.20}
+	for model, wantInput := range cases {
+		pricing, ok := lookupModelPricing(defaultModelPricing, model)
+		if !ok || pricing.InputPerM != wantInput {
+			t.Fatalf("%s: got %+v ok=%t, want InputPerM=%v", model, pricing, ok, wantInput)
+		}
+		usage := tokenUsage{InputTokens: int64Ptr(longContextThresholdTokens + 1), OutputTokens: int64Ptr(1), CacheWriteTokens: int64Ptr(20_000)}
+		codex := estimateCostUSDForTier(defaultModelPricing, model, "", usage)
+		api := estimateAPICostUSDForTier(defaultModelPricing, model, "", usage)
+		if codex == nil || api == nil || *api <= *codex {
+			t.Fatalf("%s: codex=%v api=%v, want API long-context estimate above Codex", model, codex, api)
+		}
+	}
+}

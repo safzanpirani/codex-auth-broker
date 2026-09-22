@@ -102,6 +102,10 @@ Common model ids:
 ```text
 gpt-6-astra
 gpt-6-astra(max)
+gpt-6-sol
+gpt-6-sol(max)
+gpt-6-luna
+gpt-6-luna(max)
 gpt-5.5
 gpt-5.5(low)
 gpt-5.5(medium)
@@ -167,7 +171,7 @@ Models endpoint: GET http://127.0.0.1:8317/v1/models
 Dashboard: http://127.0.0.1:8317/dashboard
 API key: dummy, unless the broker owner gives you a real local broker key
 Primary model: gpt-6-astra
-Reasoning: omit reasoning for off/default, or send reasoning.effort low/medium/high/xhigh (GPT-6 Astra and gpt-5.6 also accept max)
+Reasoning: omit reasoning for off/default, or send reasoning.effort low/medium/high/xhigh (the GPT-6 family and gpt-5.6 also accept max)
 Prompt cache key: use a stable project key, for example "safzan-coding-agent"
 
 Use /v1/responses for this provider configuration. The broker also supports
@@ -242,7 +246,7 @@ low
 medium
 high
 xhigh
-max    (GPT-6 Astra and gpt-5.6 family only; gpt-5.4 and older reject it)
+max    (GPT-6 and gpt-5.6 families only; gpt-5.4 and older reject it)
 ultra  (alias for max; wire-level "ultra" does not exist)
 ```
 
@@ -404,7 +408,7 @@ contents.
   model-side prompt caching.
 - `prompt_cache_retention`, max-token aliases, `stream_options`, and `user` are
   stripped before forwarding because the Codex backend rejects them.
-- `prompt_cache_options` passes through for GPT-6 Astra and is stripped for
+- `prompt_cache_options` passes through for the GPT-6 family and is stripped for
   older models.
 - The broker never returns or exposes the Codex refresh token.
 
@@ -432,7 +436,7 @@ back to a session id derived from the request, then to its configured constant
 (unset by default); sending your own stable key is still preferred, since it
 also makes dashboard rows easier to reason about.
 
-Do not send `prompt_cache_retention`. For GPT-6 Astra, send
+Do not send `prompt_cache_retention`. For the GPT-6 family, send
 `prompt_cache_options` when you need its supported cache TTL. The broker strips
 that object for older models and preserves `prompt_cache_key` for all models.
 OpenAI documents GPT-5.5 and GPT-5.4 as extended-retention models with entries
