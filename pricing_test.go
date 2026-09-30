@@ -292,7 +292,7 @@ func TestLoadModelPricingOverrideRejectsInvalidValues(t *testing.T) {
 }
 
 func TestLookupModelPricingGPT6Family(t *testing.T) {
-	cases := map[string]float64{"gpt-6-astra": 10.00, "gpt-6-sol": 4.00, "gpt-6-luna": 0.20}
+	cases := map[string]float64{"gpt-6-astra": 10.00, "gpt-6-sol": 4.00, "gpt-6-luna": 0.20, "gpt-6.1-sol": 4.00}
 	for model, wantInput := range cases {
 		pricing, ok := lookupModelPricing(defaultModelPricing, model)
 		if !ok || pricing.InputPerM != wantInput {
@@ -303,6 +303,17 @@ func TestLookupModelPricingGPT6Family(t *testing.T) {
 		api := estimateAPICostUSDForTier(defaultModelPricing, model, "", usage)
 		if codex == nil || api == nil || *api <= *codex {
 			t.Fatalf("%s: codex=%v api=%v, want API long-context estimate above Codex", model, codex, api)
+		}
+	}
+}
+
+func TestServiceTierCostMultiplier(t *testing.T) {
+	usage := tokenUsage{InputTokens: int64Ptr(1_000_000), OutputTokens: int64Ptr(0)}
+	base := estimateCostUSDForTier(defaultModelPricing, "gpt-6-astra", "", usage)
+	for tier, want := range map[string]float64{"": 1, "default": 1, "flex": 1, "priority": 2, "fast": 2, "ultrafast": 6, " Ultrafast ": 6} {
+		got := estimateCostUSDForTier(defaultModelPricing, "gpt-6-astra", tier, usage)
+		if base == nil || got == nil || math.Abs(*got-*base*want) > 1e-9 {
+			t.Fatalf("tier %q: got %v, want %vx base %v", tier, got, want, base)
 		}
 	}
 }

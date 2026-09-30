@@ -464,6 +464,12 @@ func normalizeResponsesBody(body map[string]any, cfg config, r *http.Request) re
 	info := requestInfo{}
 	if model := stringField(body, "model"); model != "" {
 		info.Model = model
+		// A trailing "(ultrafast)" on the model name selects the Ultrafast
+		// tier for clients such as Factory Droid that cannot set service_tier.
+		model, tierSuffix := splitServiceTierSuffix(model)
+		if tierSuffix != "" && stringField(body, "service_tier") == "" && stringField(body, "serviceTier") == "" {
+			body["service_tier"] = tierSuffix
+		}
 		normalized, effort := normalizeFactoryModel(model)
 		body["model"] = normalized
 		info.NormalizedModel = normalized
@@ -479,7 +485,7 @@ func normalizeResponsesBody(body map[string]any, cfg config, r *http.Request) re
 		info.PromptCacheRetentionSet = true
 		info.PromptCacheRetention = retention
 	}
-	info.ServiceTier = normalizeServiceTier(body)
+	info.ServiceTier = normalizeServiceTier(body, info.NormalizedModel)
 	if _, ok := body["store"]; !ok {
 		body["store"] = false
 	}
@@ -640,7 +646,11 @@ func normalizeCodexRoutingHint(value string) string {
 			if model != "" {
 				return ""
 			}
+			component, suffixTier := splitServiceTierSuffix(component)
 			model, _ = normalizeFactoryModel(component)
+			if suffixTier != "" && serviceTier == "" {
+				serviceTier = suffixTier
+			}
 		case "tier":
 			if serviceTier != "" {
 				return ""
@@ -648,8 +658,10 @@ func normalizeCodexRoutingHint(value string) string {
 			switch strings.ToLower(strings.TrimSpace(component)) {
 			case "fast", "priority":
 				serviceTier = "priority"
-			case "flex", "ultrafast":
-				serviceTier = strings.ToLower(strings.TrimSpace(component))
+			case "ultrafast", "ultra-fast", "ultra_fast":
+				serviceTier = "ultrafast"
+			case "flex":
+				serviceTier = "flex"
 			case "auto", "default":
 				// Official Codex omits explicit standard/default tiers on the
 				// wire, leaving only the model routing hint.
@@ -660,6 +672,9 @@ func normalizeCodexRoutingHint(value string) string {
 		default:
 			return ""
 		}
+	}
+	if serviceTier == "ultrafast" && !supportsUltrafast(model) {
+		serviceTier = ""
 	}
 	return buildCodexRoutingHint(model, serviceTier)
 }
@@ -730,17 +745,60 @@ func recordAppliedServiceTier(logEntry *pendingRequestLog, requested, applied st
 		valueOr(requested, "none"), valueOr(applied, "none"), honored)
 }
 
-func normalizeServiceTier(body map[string]any) string {
+// ultrafastModels lists the models whose Codex backend serves the Ultrafast
+// tier (Pro 500 plan). Today only GPT-6 Astra does; extend this when another
+// model gains the tier.
+var ultrafastModels = []string{"gpt-6-astra"}
+
+func supportsUltrafast(model string) bool {
+	model = strings.ToLower(strings.TrimSpace(model))
+	for _, supported := range ultrafastModels {
+		if model == supported || strings.HasPrefix(model, supported+"-") {
+			return true
+		}
+	}
+	return false
+}
+
+// splitServiceTierSuffix strips a trailing "(ultrafast)" from a model name and
+// returns the tier it selects.
+func splitServiceTierSuffix(model string) (string, string) {
+	trimmed := strings.TrimSpace(model)
+	lower := strings.ToLower(trimmed)
+	for _, alias := range []string{"ultrafast", "ultra-fast", "ultra_fast"} {
+		if suffix := "(" + alias + ")"; strings.HasSuffix(lower, suffix) {
+			return strings.TrimSpace(trimmed[:len(trimmed)-len(suffix)]), "ultrafast"
+		}
+	}
+	return model, ""
+}
+
+func normalizeServiceTier(body map[string]any, model string) string {
 	raw := stringField(body, "service_tier")
 	if raw == "" {
 		raw = stringField(body, "serviceTier")
 	}
 	normalized := strings.ToLower(strings.TrimSpace(raw))
 	switch normalized {
+	case "ultra-fast", "ultra_fast":
+		normalized = "ultrafast"
+	}
+	switch normalized {
 	case "fast":
 		normalized = "priority"
 		body["service_tier"] = normalized
-	case "priority", "flex", "ultrafast":
+	case "ultrafast":
+		if !supportsUltrafast(model) {
+			// Only some models on the Pro 500 plan serve Ultrafast; elsewhere
+			// the backend rejects or silently downgrades it. Send the request
+			// at the standard tier instead of failing it.
+			log.Printf("service_tier ultrafast is not supported for model=%s; sending at the standard tier", valueOr(model, "unknown"))
+			normalized = ""
+			delete(body, "service_tier")
+			break
+		}
+		body["service_tier"] = normalized
+	case "priority", "flex":
 		// TODO(review): Filter tiers against the selected model's live service_tiers once that catalog metadata is available in this path.
 		body["service_tier"] = normalized
 	case "auto", "default":

@@ -17,7 +17,7 @@ OpenAI custom-provider flow.
 Factory Droid and newer OpenAI SDKs can send fields that older models on the
 ChatGPT Codex backend do not accept directly. The proxy strips
 `prompt_cache_retention` for every model and strips `prompt_cache_options` for
-models before the GPT-6 family (Astra, Sol, Luna). It preserves `prompt_cache_key`, so BYOK requests
+models before the GPT-6 family (Astra, Sol, Sol 6.1, Luna). It preserves `prompt_cache_key`, so BYOK requests
 keep model-side prompt-cache affinity.
 
 ## Recommended Models
@@ -25,6 +25,7 @@ keep model-side prompt-cache affinity.
 ```text
 gpt-6-astra(max)
 gpt-6-sol(max)
+gpt-6.1-sol(max)
 gpt-6-luna(high)
 gpt-5.5(low)
 gpt-5.5(medium)

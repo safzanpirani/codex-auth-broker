@@ -77,6 +77,8 @@ func TestNormalizeFactoryModel(t *testing.T) {
 		{input: "gpt-6-astra-non-reasoning", model: "gpt-6-astra", effort: ""},
 		{input: "gpt-6-sol(max)", model: "gpt-6-sol", effort: "max"},
 		{input: "gpt-6-luna-ultra", model: "gpt-6-luna", effort: "max"},
+		{input: "gpt-6.1-sol(max)", model: "gpt-6.1-sol", effort: "max"},
+		{input: "gpt-6.1-sol-ultra", model: "gpt-6.1-sol", effort: "max"},
 	}
 	for _, test := range tests {
 		model, effort := normalizeFactoryModel(test.input)
@@ -189,7 +191,7 @@ func TestNormalizeResponsesBodyServiceTier(t *testing.T) {
 	}
 
 	body = map[string]any{
-		"model":        "gpt-5.5",
+		"model":        "gpt-6-astra",
 		"service_tier": "ultrafast",
 	}
 	info = normalizeResponsesBody(body, config{}, req)
@@ -883,11 +885,76 @@ func TestHandlersRequireBearerKey(t *testing.T) {
 }
 
 func TestNormalizeResponsesBodyPreservesGPT6PromptCacheOptions(t *testing.T) {
-	for _, model := range []string{"gpt-6-sol(high)", "gpt-6-luna", "gpt-6-astra-2026-09-08"} {
+	for _, model := range []string{"gpt-6-sol(high)", "gpt-6-luna", "gpt-6-astra-2026-09-08", "gpt-6.1-sol(high)", "gpt-6.1-sol-2026-10-01"} {
 		body := map[string]any{"model": model, "input": "hello", "prompt_cache_options": map[string]any{"ttl": "30m"}}
 		normalizeResponsesBody(body, config{}, httptest.NewRequest(http.MethodPost, "/v1/responses", nil))
 		if _, ok := body["prompt_cache_options"]; !ok {
 			t.Fatalf("%s: prompt_cache_options should be preserved", model)
 		}
+	}
+}
+
+func TestUltrafastTierIsGatedToSupportedModels(t *testing.T) {
+	req := httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
+	for _, tier := range []string{"ultrafast", "Ultra-Fast", "ultra_fast"} {
+		body := map[string]any{"model": "gpt-6-astra(max)", "input": "hi", "service_tier": tier}
+		info := normalizeResponsesBody(body, config{}, req)
+		if info.ServiceTier != "ultrafast" || body["service_tier"] != "ultrafast" {
+			t.Fatalf("%s on astra: info=%q body=%v, want ultrafast", tier, info.ServiceTier, body["service_tier"])
+		}
+	}
+	body := map[string]any{"model": "gpt-6-astra-2026-09-08", "input": "hi", "service_tier": "ultrafast"}
+	if info := normalizeResponsesBody(body, config{}, req); info.ServiceTier != "ultrafast" {
+		t.Fatalf("dated astra snapshot: ServiceTier = %q, want ultrafast", info.ServiceTier)
+	}
+	for _, model := range []string{"gpt-6-sol", "gpt-6.1-sol", "gpt-5.5"} {
+		body := map[string]any{"model": model, "input": "hi", "service_tier": "ultrafast"}
+		info := normalizeResponsesBody(body, config{}, req)
+		if info.ServiceTier != "" {
+			t.Fatalf("%s: ServiceTier = %q, want empty (unsupported)", model, info.ServiceTier)
+		}
+		if _, ok := body["service_tier"]; ok {
+			t.Fatalf("%s: service_tier should be stripped for unsupported models", model)
+		}
+	}
+	// Fast and flex stay available on every model.
+	body = map[string]any{"model": "gpt-6-sol", "input": "hi", "service_tier": "fast"}
+	if info := normalizeResponsesBody(body, config{}, req); info.ServiceTier != "priority" {
+		t.Fatalf("fast on sol: ServiceTier = %q, want priority", info.ServiceTier)
+	}
+}
+
+func TestUltrafastModelSuffixSelectsTier(t *testing.T) {
+	req := httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
+	tests := []struct{ model, wantModel, wantEffort, wantTier string }{
+		{"gpt-6-astra(ultrafast)", "gpt-6-astra", "", "ultrafast"},
+		{"gpt-6-astra(max)(ultrafast)", "gpt-6-astra", "max", "ultrafast"},
+		{"gpt-6-astra(ultra-fast)", "gpt-6-astra", "", "ultrafast"},
+		{"gpt-6-sol(max)(ultrafast)", "gpt-6-sol", "max", ""},
+	}
+	for _, test := range tests {
+		body := map[string]any{"model": test.model, "input": "hi"}
+		info := normalizeResponsesBody(body, config{}, req)
+		if info.NormalizedModel != test.wantModel || info.ReasoningEffort != test.wantEffort || info.ServiceTier != test.wantTier {
+			t.Fatalf("%s: got model=%q effort=%q tier=%q, want %q/%q/%q", test.model,
+				info.NormalizedModel, info.ReasoningEffort, info.ServiceTier, test.wantModel, test.wantEffort, test.wantTier)
+		}
+	}
+	// An explicit service_tier wins over the model suffix.
+	body := map[string]any{"model": "gpt-6-astra(ultrafast)", "input": "hi", "service_tier": "fast"}
+	if info := normalizeResponsesBody(body, config{}, req); info.ServiceTier != "priority" {
+		t.Fatalf("explicit fast: ServiceTier = %q, want priority", info.ServiceTier)
+	}
+}
+
+func TestUltrafastRoutingHintIsGated(t *testing.T) {
+	if got := normalizeCodexRoutingHint("model=gpt-6-astra;tier=ultrafast"); got != "model=gpt-6-astra;tier=ultrafast" {
+		t.Fatalf("astra hint = %q", got)
+	}
+	if got := normalizeCodexRoutingHint("model=gpt-6-astra(ultrafast)"); got != "model=gpt-6-astra;tier=ultrafast" {
+		t.Fatalf("astra suffix hint = %q", got)
+	}
+	if got := normalizeCodexRoutingHint("model=gpt-6-sol;tier=ultrafast"); got != "model=gpt-6-sol" {
+		t.Fatalf("sol hint = %q, want tier dropped", got)
 	}
 }

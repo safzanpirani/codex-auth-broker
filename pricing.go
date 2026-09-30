@@ -47,8 +47,10 @@ var defaultModelPricing = map[string]modelPricing{
 	"gpt-6-astra": {InputPerM: 10.00, CachedPerM: 1.00, CacheWritePerM: 10.00, OutputPerM: 50.00},
 	// gpt-6-sol and gpt-6-luna reuse gpt-5.6-sol and gpt-5.6-luna prices until
 	// OpenAI publishes their list prices.
-	"gpt-6-sol":     longContextModelPricing(4.00, 0.40, 4.00, 20.00),
-	"gpt-6-luna":    longContextModelPricing(0.20, 0.02, 0.20, 1.20),
+	"gpt-6-sol":  longContextModelPricing(4.00, 0.40, 4.00, 20.00),
+	"gpt-6-luna": longContextModelPricing(0.20, 0.02, 0.20, 1.20),
+	// gpt-6.1-sol reuses gpt-6-sol prices until OpenAI publishes its list price.
+	"gpt-6.1-sol":   longContextModelPricing(4.00, 0.40, 4.00, 20.00),
 	"gpt-5.6":       longContextModelPricing(4.00, 0.40, 4.00, 20.00),
 	"gpt-5.6-sol":   longContextModelPricing(4.00, 0.40, 4.00, 20.00),
 	"gpt-5.6-terra": longContextModelPricing(2.00, 0.20, 2.00, 12.00),
@@ -201,10 +203,22 @@ func estimatePricedUsage(pricing modelPricing, serviceTier string, usage tokenUs
 		cacheWrite*pricing.CacheWritePerM) * inputMultiplier
 	cost += output * pricing.OutputPerM * outputMultiplier
 	cost /= 1e6
-	if strings.EqualFold(strings.TrimSpace(serviceTier), "priority") || strings.EqualFold(strings.TrimSpace(serviceTier), "fast") {
-		cost *= 2
-	}
+	cost *= serviceTierCostMultiplier(serviceTier)
 	return &cost
+}
+
+// serviceTierCostMultiplier returns the API-price multiplier for a service
+// tier: Fast ("priority") costs 2x and Ultrafast costs 6x. Ultrafast burns
+// ChatGPT plan usage about 8x faster than standard, but the API-equivalent
+// estimate follows the 6x price.
+func serviceTierCostMultiplier(serviceTier string) float64 {
+	switch strings.ToLower(strings.TrimSpace(serviceTier)) {
+	case "priority", "fast":
+		return 2
+	case "ultrafast":
+		return 6
+	}
+	return 1
 }
 
 // estimateAPICostUSDForTier restores public API cache-write and long-context
@@ -226,7 +240,16 @@ func estimateAPICostUSDForTier(table map[string]modelPricing, model, serviceTier
 }
 
 // isGPT6Model reports whether model belongs to the GPT-6 family (gpt-6-astra,
-// gpt-6-sol, gpt-6-luna and their dated snapshots).
+// gpt-6-sol, gpt-6-luna, gpt-6.1-sol and their dated snapshots).
 func isGPT6Model(model string) bool {
-	return model == "gpt-6" || strings.HasPrefix(model, "gpt-6-")
+	if model == "gpt-6" || strings.HasPrefix(model, "gpt-6-") {
+		return true
+	}
+	// Point releases such as gpt-6.1-sol.
+	rest, ok := strings.CutPrefix(model, "gpt-6.")
+	if !ok {
+		return false
+	}
+	minor, _, _ := strings.Cut(rest, "-")
+	return minor != "" && strings.Trim(minor, "0123456789") == ""
 }

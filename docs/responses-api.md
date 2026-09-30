@@ -104,6 +104,8 @@ gpt-6-astra
 gpt-6-astra(max)
 gpt-6-sol
 gpt-6-sol(max)
+gpt-6.1-sol
+gpt-6.1-sol(max)
 gpt-6-luna
 gpt-6-luna(max)
 gpt-5.5
@@ -271,8 +273,30 @@ Send either accepted Fast mode spelling:
 `fast` and `priority` are aliases. The broker canonicalizes both to the signal
 used by the current official Codex client: `service_tier: "priority"` in the
 request body plus `x-codex-routing-hint: model=<model>;tier=priority` on HTTP
-requests. `serviceTier` is accepted as a camel-case input alias. `flex` and
-`ultrafast` retain their own wire values.
+requests. `serviceTier` is accepted as a camel-case input alias. `flex` retains
+its own wire value.
+
+### Ultrafast (Pro 500 plan)
+
+`ultrafast` is the top service tier. It is available on the ChatGPT Pro 500
+plan and, at the moment, only for `gpt-6-astra`. Ultrafast burns plan usage
+about 8x faster than standard, and its API-equivalent price is 6x standard
+(Fast is 2x). The dashboard cost estimate uses the 6x price.
+
+```json
+{ "model": "gpt-6-astra(max)", "service_tier": "ultrafast" }
+```
+
+`gpt-6-astra(ultrafast)` and `gpt-6-astra(max)(ultrafast)` select the same tier
+from the model name, for clients that cannot set `service_tier`. The aliases
+`ultra-fast` and `ultra_fast` are accepted. An explicit `service_tier` wins over
+the model-name suffix.
+
+For any other model, the broker logs a line and sends the request at the
+standard tier, because the backend does not serve Ultrafast there. The broker
+cannot see the account's plan. On a plan without Ultrafast, the backend may
+still downgrade the request; the dashboard shows the applied tier, and the
+cost estimate follows the applied tier rather than the requested one.
 
 Explicit `auto` and `default` are omitted on the ChatGPT Codex wire. This
 matches the official client and avoids the backend rejection seen with
