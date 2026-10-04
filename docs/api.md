@@ -88,6 +88,11 @@ Example entry:
   "stream": false,
   "status": 200,
   "upstream_status": 200,
+  "upstream_headers": {
+    "x-request-id": "req_abc123",
+    "openai-processing-ms": "1790",
+    "x-codex-primary-used-percent": "42"
+  },
   "prompt_cache_key_set": true,
   "prompt_cache_key": "sha256:9ec8d7df5522",
   "prompt_cache_retention_set": false,
@@ -104,6 +109,14 @@ The request log stores a short SHA-256 fingerprint instead of the raw prompt
 cache key. It deliberately does not store prompt text, completion text,
 request bodies, access tokens, refresh tokens, or bearer keys. Set
 `--request-log-limit 0` to disable it.
+
+`upstream_headers` holds a filtered copy of the Codex backend's response
+headers. Only an allowlist survives: request IDs, the model identifier,
+processing time, and numeric rate-limit metrics. Values that look like tokens
+are redacted, and each value is capped at 256 bytes. Responses, Chat
+Completions, alpha search, and compact also return the same set to the client
+as `X-Upstream-<name>` response headers. Image calls and WebSocket turns do not
+record them yet.
 
 For streaming `/v1/responses`, the broker forwards bytes to the client while
 also scanning SSE `data:` frames for the final response usage object. If the
