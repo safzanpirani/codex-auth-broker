@@ -14,6 +14,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/klauspost/compress/zstd"
 )
@@ -51,11 +53,12 @@ type responsesProxy struct {
 // upstream response (all accounts rate-limited, auth failed, or a transport
 // error). It carries what handleResponses needs to relay to the client.
 type dispatchFailure struct {
-	status     int
-	message    string
-	body       []byte
-	retryAfter time.Time
-	window     string
+	status          int
+	message         string
+	body            []byte
+	retryAfter      time.Time
+	window          string
+	upstreamHeaders map[string]string
 }
 
 type requestInfo struct {
@@ -241,6 +244,7 @@ func (p *responsesProxy) handleResponses(w http.ResponseWriter, r *http.Request)
 	}
 	defer resp.Body.Close()
 	logEntry.markUpstreamStatus(resp.StatusCode)
+	captureUpstreamHeaders(w, logEntry, resp.Header)
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		responseBody, _ := io.ReadAll(io.LimitReader(resp.Body, 64*1024))
@@ -336,7 +340,7 @@ func (p *responsesProxy) dispatchUpstream(ctx context.Context, encoded []byte, i
 			acct.cool(rlNow, until, window)
 			log.Printf("codex account %s hit rate limit window=%s source=%s cooling_until=%s; rotating (%d/%d)",
 				acct.label, window, source, until.UTC().Format(time.RFC3339), attempt+1, n)
-			lastRateLimit = &dispatchFailure{status: http.StatusTooManyRequests, body: rlBody, retryAfter: until, window: window}
+			lastRateLimit = &dispatchFailure{status: http.StatusTooManyRequests, body: rlBody, retryAfter: until, window: window, upstreamHeaders: diagnosticUpstreamHeaders(resp.Header)}
 			continue
 		}
 		if resp.StatusCode < http.StatusBadRequest {
@@ -389,6 +393,11 @@ func (p *responsesProxy) buildUpstreamRequest(ctx context.Context, encoded []byt
 }
 
 func (p *responsesProxy) writeDispatchFailure(w http.ResponseWriter, logEntry *pendingRequestLog, fail *dispatchFailure) {
+	if fail.upstreamHeaders != nil {
+		logEntry.markUpstreamStatus(fail.status)
+		logEntry.markUpstreamHeaders(fail.upstreamHeaders)
+		mirrorUpstreamHeaders(w, fail.upstreamHeaders)
+	}
 	if !fail.retryAfter.IsZero() {
 		wait := time.Until(fail.retryAfter)
 		// Never advertise longer than the probe interval: the pool re-checks
@@ -1310,6 +1319,122 @@ func copyStreamingResponse(w http.ResponseWriter, r io.Reader) (tokenUsage, stri
 				return finish(errors.New("upstream stream read failed"))
 			}
 			return finish(nil)
+		}
+	}
+}
+
+// diagnosticHeaderNames is a finite allowlist. Unknown headers can contain
+// credentials, session state, or request/response text, so a denylist cannot
+// enforce metadata-only history. true denotes a numeric metric; false denotes
+// an opaque identifier. The finite set also bounds each retained header map.
+var diagnosticHeaderNames = map[string]bool{
+	"x-request-id": false, "request-id": false, "openai-request-id": false,
+	"cf-ray": false, "openai-model": false,
+	"openai-processing-ms": true, "x-envoy-upstream-service-time": true,
+	"x-codex-primary-used-percent":                 true,
+	"x-codex-primary-window-minutes":               true,
+	"x-codex-primary-reset-after-seconds":          true,
+	"x-codex-secondary-used-percent":               true,
+	"x-codex-secondary-window-minutes":             true,
+	"x-codex-secondary-reset-after-seconds":        true,
+	"x-codex-primary-over-secondary-limit-percent": true,
+	"x-codex-reset-after-seconds":                  true,
+	"x-ratelimit-limit-requests":                   true, "x-ratelimit-remaining-requests": true,
+	"x-ratelimit-limit-tokens": true, "x-ratelimit-remaining-tokens": true,
+}
+
+// diagnosticUpstreamHeaders retains bounded routing metadata. Header hints do
+// not prove which model served a request. Values are redacted before truncation
+// so shortening a credential cannot hide it from the redactor.
+func diagnosticUpstreamHeaders(header http.Header) map[string]string {
+	var out map[string]string
+	for key, values := range header {
+		lower := strings.ToLower(key)
+		numeric, allowed := diagnosticHeaderNames[lower]
+		if !allowed || len(values) != 1 || len(values[0]) > 4096 {
+			continue
+		}
+		// Connection can nominate additional hop-by-hop fields, including an
+		// otherwise allowed diagnostic name. Header maps need not be canonical.
+		hopByHop := false
+		for name, connections := range header {
+			if strings.EqualFold(name, "connection") {
+				for _, connection := range connections {
+					for _, field := range strings.Split(connection, ",") {
+						if strings.EqualFold(strings.TrimSpace(field), lower) {
+							hopByHop = true
+						}
+					}
+				}
+			}
+		}
+		if hopByHop {
+			continue
+		}
+		value := strings.TrimSpace(values[0])
+		if value == "" {
+			continue
+		}
+		value = redactDiagnosticHeaderValue(value, numeric)
+		if len(value) > 256 {
+			end := 256
+			for !utf8.RuneStart(value[end]) {
+				end--
+			}
+			value = value[:end]
+		}
+		if out == nil {
+			out = make(map[string]string)
+		}
+		// Reject case-variant duplicates instead of depending on map order.
+		if _, exists := out[lower]; exists {
+			out[lower] = "[redacted]"
+		} else {
+			out[lower] = value
+		}
+	}
+	return out
+}
+
+func redactDiagnosticHeaderValue(value string, numeric bool) string {
+	if value == "[redacted]" || value == "[redacted-token]" || value == "[redacted-jwt]" {
+		return value // Keep persistence sanitization idempotent.
+	}
+	lower := strings.ToLower(value)
+	if !utf8.ValidString(value) || strings.Contains(lower, "bearer") || strings.Contains(lower, "sk-") || strings.Contains(lower, "eyj") {
+		return "[redacted]"
+	}
+	if redacted := redactTokenLikeText(value); redacted != value {
+		return "[redacted]"
+	}
+	if numeric {
+		// Numeric headers cannot carry free-form text or opaque credentials.
+		if strings.IndexFunc(value, func(r rune) bool { return (r < '0' || r > '9') && r != '.' }) != -1 {
+			return "[redacted]"
+		}
+		if _, err := strconv.ParseFloat(value, 64); err != nil {
+			return "[redacted]"
+		}
+	} else if strings.IndexFunc(value, func(r rune) bool {
+		return !unicode.IsLetter(r) && !unicode.IsNumber(r) && !strings.ContainsRune("-_.:", r)
+	}) != -1 {
+		// IDs and model names have no free-form payload, URL, or JSON syntax.
+		return "[redacted]"
+	}
+	return value
+}
+
+func captureUpstreamHeaders(w http.ResponseWriter, entry *pendingRequestLog, header http.Header) {
+	headers := diagnosticUpstreamHeaders(header)
+	entry.markUpstreamHeaders(headers)
+	mirrorUpstreamHeaders(w, headers)
+}
+
+func mirrorUpstreamHeaders(w http.ResponseWriter, headers map[string]string) {
+	for name, value := range headers {
+		key := "X-Upstream-" + name
+		if _, exists := w.Header()[http.CanonicalHeaderKey(key)]; !exists {
+			w.Header().Set(key, value)
 		}
 	}
 }

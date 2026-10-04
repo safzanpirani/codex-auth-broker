@@ -34,9 +34,9 @@ const (
 	defaultAlphaSearchURL = "https://chatgpt.com/backend-api/codex/alpha/search"
 	// defaultModelsClientVersion is sent as the required ?client_version= query
 	// param on the upstream codex/models endpoint. The upstream gates its model
-	// list on this value (older versions return an empty list), so we send a
-	// high version to receive the full catalog.
-	defaultModelsClientVersion = "2.0.0"
+	// list on this value (older versions return an empty list), so we send a recent
+	// Codex CLI version to receive the full catalog.
+	defaultModelsClientVersion = "0.158.0"
 	// defaultUpstreamOriginator identifies the client to the Codex backend.
 	// Some models (e.g. gpt-5.6-luna) are allowlisted to the official CLI's
 	// originator and 404 for anything else, so we present as codex_cli_rs.

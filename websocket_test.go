@@ -97,7 +97,7 @@ func TestResponsesWebSocketProxiesNormalizesAndRotatesHandshake(t *testing.T) {
 			apiKey:               "client-key",
 			upstreamURL:          upstream.URL + "/v1/responses",
 			upstreamOriginator:   "codex_cli_rs",
-			modelsClientVersion:  "2.0.0",
+			modelsClientVersion:  defaultModelsClientVersion,
 			promptCacheKey:       "",
 			promptCacheRetention: "",
 		},
@@ -157,7 +157,7 @@ func TestResponsesWebSocketProxiesNormalizesAndRotatesHandshake(t *testing.T) {
 }
 
 func TestResponsesWebSocketHeadersRejectsRoutingHintInjection(t *testing.T) {
-	proxy := &responsesProxy{cfg: config{upstreamOriginator: "codex_cli_rs", modelsClientVersion: "2.0.0"}}
+	proxy := &responsesProxy{cfg: config{upstreamOriginator: "codex_cli_rs", modelsClientVersion: defaultModelsClientVersion}}
 	request := httptest.NewRequest(http.MethodGet, "/v1/responses", nil)
 	request.Header.Set(codexRoutingHintHeader, "model=gpt-5.5;tier=priority;injected=yes")
 	headers := proxy.responsesWebSocketHeaders(request, accessMaterial{AccessToken: "token", AccountID: "account"})

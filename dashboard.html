@@ -745,7 +745,7 @@
           lines.push("<div class='line'><b>est. cost</b>$" + Number(selectedCost).toFixed(6) + " " + pricingLabel() + "</div>");
         }
         const meta = {};
-        ["id", "started_at", "method", "path", "status", "upstream_status", "model", "normalized_model",
+        ["id", "started_at", "method", "path", "status", "upstream_status", "upstream_headers", "model", "normalized_model",
          "reasoning_effort", "service_tier", "applied_service_tier", "stream", "duration_ms", "input_count", "tool_count",
          "prompt_cache_key_set", "prompt_cache_key", "prompt_cache_retention_set", "prompt_cache_retention", "cache_write_tokens", "request_id", "client", "client_name", "user", "error"
         ].forEach((key) => { if (req[key] !== undefined && req[key] !== "" && req[key] !== null) meta[key] = req[key]; });

@@ -203,6 +203,7 @@ func (p *responsesProxy) handleCompact(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	entry.markUpstreamStatus(resp.StatusCode)
+	captureUpstreamHeaders(w, entry, resp.Header)
 	result, fail := readCapabilityResponse(resp, maxRequestBodyBytes)
 	if fail != nil {
 		p.writeDispatchFailure(w, entry, fail)

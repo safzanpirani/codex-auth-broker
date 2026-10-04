@@ -260,7 +260,7 @@ func TestHandleResponsesServiceTierTransport(t *testing.T) {
 					apiKey:              "client-key",
 					upstreamURL:         upstream.URL,
 					upstreamOriginator:  "codex_cli_rs",
-					modelsClientVersion: "2.0.0",
+					modelsClientVersion: defaultModelsClientVersion,
 				},
 				pool:     newAccountPool([]string{authFile}, time.Minute, upstream.Client()),
 				requests: store,

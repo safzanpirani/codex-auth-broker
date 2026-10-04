@@ -32,6 +32,8 @@ OAuth login, while keeping the real refresh token local.
   `--request-log-file`). Never persist or log prompt text, completion text,
   request bodies, bearer keys, access tokens, or refresh tokens — in memory or
   on disk. Anything written to the persistent log must be a `requestLogEntry`.
+- Upstream response headers may be logged only through `diagnosticUpstreamHeaders`
+  filtering and redaction. Keep its finite metadata allowlist and value bounds.
 - Per-request cost is an API-equivalent estimate from the pricing table in
   `pricing.go` (overridable via `CODEX_AUTH_BROKER_PRICING`); ChatGPT-plan
   traffic is not actually billed per token. Keep the table in sync with the

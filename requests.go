@@ -19,37 +19,38 @@ type requestLogStore struct {
 }
 
 type requestLogEntry struct {
-	ID                      int64    `json:"id"`
-	StartedAt               string   `json:"started_at"`
-	DurationMS              int64    `json:"duration_ms"`
-	Method                  string   `json:"method"`
-	Path                    string   `json:"path"`
-	Client                  string   `json:"client,omitempty"`
-	ClientName              string   `json:"client_name,omitempty"`
-	User                    string   `json:"user,omitempty"`
-	RequestID               string   `json:"request_id,omitempty"`
-	Model                   string   `json:"model,omitempty"`
-	NormalizedModel         string   `json:"normalized_model,omitempty"`
-	ReasoningEffort         string   `json:"reasoning_effort,omitempty"`
-	ServiceTier             string   `json:"service_tier,omitempty"`
-	AppliedServiceTier      string   `json:"applied_service_tier,omitempty"`
-	Stream                  bool     `json:"stream"`
-	Status                  int      `json:"status"`
-	UpstreamStatus          int      `json:"upstream_status,omitempty"`
-	Error                   string   `json:"error,omitempty"`
-	PromptCacheKeySet       bool     `json:"prompt_cache_key_set"`
-	PromptCacheKey          string   `json:"prompt_cache_key,omitempty"`
-	PromptCacheRetentionSet bool     `json:"prompt_cache_retention_set"`
-	PromptCacheRetention    string   `json:"prompt_cache_retention,omitempty"`
-	InputCount              int      `json:"input_count,omitempty"`
-	ToolCount               int      `json:"tool_count,omitempty"`
-	InputTokens             *int64   `json:"input_tokens,omitempty"`
-	OutputTokens            *int64   `json:"output_tokens,omitempty"`
-	CachedTokens            *int64   `json:"cached_tokens,omitempty"`
-	CacheWriteTokens        *int64   `json:"cache_write_tokens,omitempty"`
-	TotalTokens             *int64   `json:"total_tokens,omitempty"`
-	CostUSD                 *float64 `json:"cost_usd,omitempty"`
-	APICostUSD              *float64 `json:"api_cost_usd,omitempty"`
+	ID                      int64             `json:"id"`
+	StartedAt               string            `json:"started_at"`
+	DurationMS              int64             `json:"duration_ms"`
+	Method                  string            `json:"method"`
+	Path                    string            `json:"path"`
+	Client                  string            `json:"client,omitempty"`
+	ClientName              string            `json:"client_name,omitempty"`
+	User                    string            `json:"user,omitempty"`
+	RequestID               string            `json:"request_id,omitempty"`
+	Model                   string            `json:"model,omitempty"`
+	NormalizedModel         string            `json:"normalized_model,omitempty"`
+	ReasoningEffort         string            `json:"reasoning_effort,omitempty"`
+	ServiceTier             string            `json:"service_tier,omitempty"`
+	AppliedServiceTier      string            `json:"applied_service_tier,omitempty"`
+	Stream                  bool              `json:"stream"`
+	Status                  int               `json:"status"`
+	UpstreamStatus          int               `json:"upstream_status,omitempty"`
+	UpstreamHeaders         map[string]string `json:"upstream_headers,omitempty"`
+	Error                   string            `json:"error,omitempty"`
+	PromptCacheKeySet       bool              `json:"prompt_cache_key_set"`
+	PromptCacheKey          string            `json:"prompt_cache_key,omitempty"`
+	PromptCacheRetentionSet bool              `json:"prompt_cache_retention_set"`
+	PromptCacheRetention    string            `json:"prompt_cache_retention,omitempty"`
+	InputCount              int               `json:"input_count,omitempty"`
+	ToolCount               int               `json:"tool_count,omitempty"`
+	InputTokens             *int64            `json:"input_tokens,omitempty"`
+	OutputTokens            *int64            `json:"output_tokens,omitempty"`
+	CachedTokens            *int64            `json:"cached_tokens,omitempty"`
+	CacheWriteTokens        *int64            `json:"cache_write_tokens,omitempty"`
+	TotalTokens             *int64            `json:"total_tokens,omitempty"`
+	CostUSD                 *float64          `json:"cost_usd,omitempty"`
+	APICostUSD              *float64          `json:"api_cost_usd,omitempty"`
 }
 
 type pendingRequestLog struct {
@@ -108,7 +109,7 @@ func (s *requestLogStore) restore(entries []requestLogEntry, maxID int64) {
 	// Recompute both views from stored token counts so pricing changes apply to
 	// historical dashboard rows.
 	for i := range entries {
-		entries[i] = s.priceEntry(entries[i])
+		entries[i] = s.priceEntry(sanitizeRequestLogEntry(entries[i]))
 	}
 	s.entries = append(s.entries, entries...)
 	if maxID > s.nextID {
@@ -244,6 +245,13 @@ func (l *pendingRequestLog) markUpstreamStatus(status int) {
 		return
 	}
 	l.Entry.UpstreamStatus = status
+}
+
+func (l *pendingRequestLog) markUpstreamHeaders(headers map[string]string) {
+	if l == nil {
+		return
+	}
+	l.Entry.UpstreamHeaders = headers
 }
 
 func (l *pendingRequestLog) markStreamError(message string) {
@@ -384,6 +392,15 @@ func sanitizeRequestLogEntry(entry requestLogEntry) requestLogEntry {
 	clean := func(value string, max int) string {
 		return truncateLogField(redactTokenLikeText(value), max)
 	}
+	// Re-filter persisted and externally supplied entries, and own the map so
+	// caller mutations cannot inject raw values after sanitization.
+	headers := make(http.Header)
+	for key, value := range entry.UpstreamHeaders {
+		if _, allowed := diagnosticHeaderNames[strings.ToLower(key)]; allowed {
+			headers[key] = []string{value}
+		}
+	}
+	entry.UpstreamHeaders = diagnosticUpstreamHeaders(headers)
 	entry.Method = clean(entry.Method, 16)
 	entry.Path = clean(entry.Path, 256)
 	entry.Client = clean(entry.Client, 128)

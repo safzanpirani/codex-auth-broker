@@ -164,3 +164,19 @@ test('sign out clears displayed metadata before refresh and ignores older authen
   await result;
   assertCleared();
 });
+
+test('request details show upstream headers with HTML escaping', async () => {
+  const ui = dashboard();
+  ui.requests.find(request => request.url.includes('/requests')).respond({
+    requests: [{ id: 1, status: 200, upstream_headers: { 'x-request-id': '<script>bad</script>' } }],
+  });
+  await settled();
+  ui.element('requestRows').handlers.click({
+    target: { closest: () => ({ dataset: { id: '1' } }) },
+  });
+  const detail = ui.element('requestRows').innerHTML;
+  assert.match(detail, /upstream_headers/);
+  assert.match(detail, /x-request-id/);
+  assert.match(detail, /&lt;script&gt;bad&lt;\/script&gt;/);
+  assert.doesNotMatch(detail, /<script>/);
+});

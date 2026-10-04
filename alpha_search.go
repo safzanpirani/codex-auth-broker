@@ -81,6 +81,7 @@ func (p *responsesProxy) handleAlphaSearch(w http.ResponseWriter, r *http.Reques
 	}
 	defer resp.Body.Close()
 	logEntry.markUpstreamStatus(resp.StatusCode)
+	captureUpstreamHeaders(w, logEntry, resp.Header)
 	body, err := io.ReadAll(io.LimitReader(resp.Body, maxAlphaSearchResponseBytes+1))
 	if err != nil || len(body) > maxAlphaSearchResponseBytes {
 		message := "upstream search response incomplete or too large"

@@ -371,6 +371,27 @@ estimated cost. `?window=` accepts `24h`, `7d`, `30d`, `all` (default), or any
 Go duration, filtering by request start time. It reads the persisted JSONL log
 when `--request-log-file` is enabled (full history), else the in-memory ring.
 
+### Upstream response diagnostics
+
+HTTP Responses, Chat Completions, alpha search, and compact responses expose
+filtered backend metadata as `X-Upstream-*` headers. Request history stores the
+same metadata in `upstream_headers`; expand a dashboard request to inspect it.
+Responses and Chat Completions include diagnostics for streaming, aggregated
+JSON, and upstream errors. Account failover records only the final response;
+when all accounts return 429, diagnostics describe the last returned 429 body.
+
+The filter allows only request IDs, model identifiers, processing time, and
+specific numeric rate-limit metrics. It drops unknown headers, credentials,
+cookies, session state, body metadata, and hop-by-hop fields, including fields
+named by `Connection`. It rejects repeated or oversized values, redacts
+token-like or malformed values, and truncates each retained value to 256 bytes
+at a UTF-8 boundary. The finite allowlist bounds each entry's header map.
+The normal memory-history and JSONL size limits still apply.
+
+These headers support routing investigations. They do not prove which model
+served a request or establish silent rerouting. Image calls and WebSocket turns
+do not yet attach these diagnostics to their request history.
+
 ## Named Client Keys
 
 `--keys-file` (or `CODEX_AUTH_BROKER_KEYS_FILE`) points at a JSON array of
@@ -519,7 +540,7 @@ Flags and equivalent environment variables:
 | `--prompt-cache-retention` | `CODEX_AUTH_BROKER_PROMPT_CACHE_RETENTION` | records legacy client intent for compatibility; never forwarded |
 | `--usage-url` | `CODEX_AUTH_BROKER_USAGE_URL` | ChatGPT wham usage endpoint |
 | `--models-url` | `CODEX_AUTH_BROKER_MODELS_URL` | ChatGPT Codex models endpoint |
-| n/a | `CODEX_AUTH_BROKER_MODELS_CLIENT_VERSION` | `2.0.0` (`client_version` sent to the Codex models endpoint) |
+| n/a | `CODEX_AUTH_BROKER_MODELS_CLIENT_VERSION` | `0.158.0` (`client_version` sent to the Codex models endpoint) |
 | `--max-concurrent` | `CODEX_AUTH_BROKER_MAX_CONCURRENT` | `8`; cap on simultaneous upstream Codex calls, `0` = unlimited (see [Concurrency Cap](#concurrency-cap)) |
 | `--request-log-max-bytes` | `CODEX_AUTH_BROKER_REQUEST_LOG_MAX_BYTES` | `67108864` (64 MiB); `0` keeps unlimited history |
 | `--request-log-limit` | `CODEX_AUTH_BROKER_REQUEST_LOG_LIMIT` | `1000` |

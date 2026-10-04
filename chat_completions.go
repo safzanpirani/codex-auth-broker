@@ -72,6 +72,7 @@ func (p *responsesProxy) handleChatCompletions(w http.ResponseWriter, r *http.Re
 	}
 	defer resp.Body.Close()
 	logEntry.markUpstreamStatus(resp.StatusCode)
+	captureUpstreamHeaders(w, logEntry, resp.Header)
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		p.relayChatCompletionsUpstreamError(w, logEntry, resp)
