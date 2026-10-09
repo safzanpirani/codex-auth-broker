@@ -311,7 +311,7 @@ It shows:
   GPT-5.6, GPT-5.5, and GPT-5.4 requests above
   272,000 input tokens apply the published premium to the full request: 2x
   input and 1.5x output. The broker does not apply that premium to GPT-6
-  family Codex traffic. Fast mode uses the official 2x price multiplier and Ultrafast (GPT-6 Astra on the Pro 500 plan) uses 6x. Unit-rate
+  family Codex traffic. Fast mode uses the official 2x price multiplier and Ultrafast (GPT-6 Astra and GPT-6.1 Sol on the Pro 500 plan) uses 6x. Unit-rate
   overrides retain this model policy.
 - Filtering, pause/resume, manual refresh, and clear-history controls.
 

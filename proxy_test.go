@@ -903,11 +903,14 @@ func TestUltrafastTierIsGatedToSupportedModels(t *testing.T) {
 			t.Fatalf("%s on astra: info=%q body=%v, want ultrafast", tier, info.ServiceTier, body["service_tier"])
 		}
 	}
-	body := map[string]any{"model": "gpt-6-astra-2026-09-08", "input": "hi", "service_tier": "ultrafast"}
-	if info := normalizeResponsesBody(body, config{}, req); info.ServiceTier != "ultrafast" {
-		t.Fatalf("dated astra snapshot: ServiceTier = %q, want ultrafast", info.ServiceTier)
+	for _, model := range []string{"gpt-6-astra-2026-09-08", "gpt-6.1-sol", "gpt-6.1-sol(high)", "gpt-6.1-sol-2026-10-01"} {
+		body := map[string]any{"model": model, "input": "hi", "service_tier": "ultrafast"}
+		info := normalizeResponsesBody(body, config{}, req)
+		if info.ServiceTier != "ultrafast" || body["service_tier"] != "ultrafast" {
+			t.Fatalf("%s: info=%q body=%v, want ultrafast", model, info.ServiceTier, body["service_tier"])
+		}
 	}
-	for _, model := range []string{"gpt-6-sol", "gpt-6.1-sol", "gpt-5.5"} {
+	for _, model := range []string{"gpt-6-sol", "gpt-6-luna", "gpt-5.5"} {
 		body := map[string]any{"model": model, "input": "hi", "service_tier": "ultrafast"}
 		info := normalizeResponsesBody(body, config{}, req)
 		if info.ServiceTier != "" {
@@ -918,7 +921,7 @@ func TestUltrafastTierIsGatedToSupportedModels(t *testing.T) {
 		}
 	}
 	// Fast and flex stay available on every model.
-	body = map[string]any{"model": "gpt-6-sol", "input": "hi", "service_tier": "fast"}
+	body := map[string]any{"model": "gpt-6-sol", "input": "hi", "service_tier": "fast"}
 	if info := normalizeResponsesBody(body, config{}, req); info.ServiceTier != "priority" {
 		t.Fatalf("fast on sol: ServiceTier = %q, want priority", info.ServiceTier)
 	}
@@ -930,6 +933,7 @@ func TestUltrafastModelSuffixSelectsTier(t *testing.T) {
 		{"gpt-6-astra(ultrafast)", "gpt-6-astra", "", "ultrafast"},
 		{"gpt-6-astra(max)(ultrafast)", "gpt-6-astra", "max", "ultrafast"},
 		{"gpt-6-astra(ultra-fast)", "gpt-6-astra", "", "ultrafast"},
+		{"gpt-6.1-sol(max)(ultrafast)", "gpt-6.1-sol", "max", "ultrafast"},
 		{"gpt-6-sol(max)(ultrafast)", "gpt-6-sol", "max", ""},
 	}
 	for _, test := range tests {
@@ -953,6 +957,9 @@ func TestUltrafastRoutingHintIsGated(t *testing.T) {
 	}
 	if got := normalizeCodexRoutingHint("model=gpt-6-astra(ultrafast)"); got != "model=gpt-6-astra;tier=ultrafast" {
 		t.Fatalf("astra suffix hint = %q", got)
+	}
+	if got := normalizeCodexRoutingHint("model=gpt-6.1-sol;tier=ultrafast"); got != "model=gpt-6.1-sol;tier=ultrafast" {
+		t.Fatalf("6.1 sol hint = %q", got)
 	}
 	if got := normalizeCodexRoutingHint("model=gpt-6-sol;tier=ultrafast"); got != "model=gpt-6-sol" {
 		t.Fatalf("sol hint = %q, want tier dropped", got)

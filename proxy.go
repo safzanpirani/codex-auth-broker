@@ -755,9 +755,9 @@ func recordAppliedServiceTier(logEntry *pendingRequestLog, requested, applied st
 }
 
 // ultrafastModels lists the models whose Codex backend serves the Ultrafast
-// tier (Pro 500 plan). Today only GPT-6 Astra does; extend this when another
-// model gains the tier.
-var ultrafastModels = []string{"gpt-6-astra"}
+// tier (Pro 500 plan). Today GPT-6 Astra and GPT-6.1 Sol do; extend this when
+// another model gains the tier.
+var ultrafastModels = []string{"gpt-6-astra", "gpt-6.1-sol"}
 
 func supportsUltrafast(model string) bool {
 	model = strings.ToLower(strings.TrimSpace(model))

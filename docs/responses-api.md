@@ -279,7 +279,7 @@ its own wire value.
 ### Ultrafast (Pro 500 plan)
 
 `ultrafast` is the top service tier. It is available on the ChatGPT Pro 500
-plan and, at the moment, only for `gpt-6-astra`. Ultrafast burns plan usage
+plan and, at the moment, only for `gpt-6-astra` and `gpt-6.1-sol`. Ultrafast burns plan usage
 about 8x faster than standard, and its API-equivalent price is 6x standard
 (Fast is 2x). The dashboard cost estimate uses the 6x price.
 
@@ -287,7 +287,8 @@ about 8x faster than standard, and its API-equivalent price is 6x standard
 { "model": "gpt-6-astra(max)", "service_tier": "ultrafast" }
 ```
 
-`gpt-6-astra(ultrafast)` and `gpt-6-astra(max)(ultrafast)` select the same tier
+`gpt-6-astra(ultrafast)`, `gpt-6-astra(max)(ultrafast)` and
+`gpt-6.1-sol(max)(ultrafast)` select the same tier
 from the model name, for clients that cannot set `service_tier`. The aliases
 `ultra-fast` and `ultra_fast` are accepted. An explicit `service_tier` wins over
 the model-name suffix.
