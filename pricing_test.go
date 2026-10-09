@@ -292,7 +292,7 @@ func TestLoadModelPricingOverrideRejectsInvalidValues(t *testing.T) {
 }
 
 func TestLookupModelPricingGPT6Family(t *testing.T) {
-	cases := map[string]float64{"gpt-6-astra": 10.00, "gpt-6-sol": 4.00, "gpt-6-luna": 0.20, "gpt-6.1-sol": 4.00}
+	cases := map[string]float64{"gpt-6-astra": 10.00, "gpt-6-sol": 2.00, "gpt-6-luna": 0.10, "gpt-6.1-sol": 2.00}
 	for model, wantInput := range cases {
 		pricing, ok := lookupModelPricing(defaultModelPricing, model)
 		if !ok || pricing.InputPerM != wantInput {
@@ -305,6 +305,17 @@ func TestLookupModelPricingGPT6Family(t *testing.T) {
 			t.Fatalf("%s: codex=%v api=%v, want API long-context estimate above Codex", model, codex, api)
 		}
 	}
+	// GPT-6.1 Sol over 272K input: the Codex estimate stays at list rates, the
+	// API estimate applies 2x input, 1.5x output and the 1.25x cache-write rate.
+	usage := tokenUsage{InputTokens: int64Ptr(300_000), CachedTokens: int64Ptr(100_000), CacheWriteTokens: int64Ptr(50_000), OutputTokens: int64Ptr(10_000)}
+	codexWant := (150_000*2.00 + 100_000*0.10 + 50_000*2.00 + 10_000*10.00) / 1e6
+	apiWant := ((150_000*2.00+100_000*0.10+50_000*2.50)*2 + 10_000*10.00*1.5) / 1e6
+	if got := estimateCostUSDForTier(defaultModelPricing, "gpt-6.1-sol", "", usage); got == nil || math.Abs(*got-codexWant) > 1e-9 {
+		t.Fatalf("gpt-6.1-sol codex estimate = %v, want %v", got, codexWant)
+	}
+	if got := estimateAPICostUSDForTier(defaultModelPricing, "gpt-6.1-sol", "", usage); got == nil || math.Abs(*got-apiWant) > 1e-9 {
+		t.Fatalf("gpt-6.1-sol API estimate = %v, want %v", got, apiWant)
+	}
 }
 
 func TestServiceTierCostMultiplier(t *testing.T) {
@@ -315,5 +326,10 @@ func TestServiceTierCostMultiplier(t *testing.T) {
 		if base == nil || got == nil || math.Abs(*got-*base*want) > 1e-9 {
 			t.Fatalf("tier %q: got %v, want %vx base %v", tier, got, want, base)
 		}
+	}
+	// Ultrafast GPT-6.1 Sol: 6x its $2 input / $10 output list rates.
+	solUsage := tokenUsage{InputTokens: int64Ptr(1_000_000), OutputTokens: int64Ptr(1_000_000)}
+	if got := estimateCostUSDForTier(defaultModelPricing, "gpt-6.1-sol", "ultrafast", solUsage); got == nil || math.Abs(*got-72) > 1e-9 {
+		t.Fatalf("gpt-6.1-sol ultrafast: got %v, want 72", got)
 	}
 }
