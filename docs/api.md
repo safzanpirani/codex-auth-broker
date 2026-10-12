@@ -137,6 +137,19 @@ reset.
 
 Returns configured model ids in OpenAI list format.
 
+GPT-6 family entries also carry the default Codex context window as both
+`context_window` and `context_length`. Effort-suffixed ids and dated snapshots
+inherit the window of their base model:
+
+| Model | Context window |
+|---|---|
+| `gpt-6.1-sol` | 500,000 |
+| `gpt-6-astra`, `gpt-6-sol`, `gpt-6-luna` | 272,000 |
+
+GPT-6 family requests above 272K input tokens get no long-context premium in
+the Codex cost estimate, because subscription usage carries no long-context fee.
+The API-equivalent estimate still applies the public API premium.
+
 ## `POST /v1/responses`
 
 The primary endpoint. It accepts OpenAI Responses-shaped requests and forwards

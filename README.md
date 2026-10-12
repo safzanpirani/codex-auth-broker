@@ -462,9 +462,11 @@ gpt-5.3-codex
 
 Declare `reasoning: true` so Pi's thinking-level control maps to
 `reasoning.effort`, and declare `input: ["text", "image"]` for multimodal
-requests. Cost metadata should use the equivalent OpenAI API per-million-token
-prices for reporting, even though traffic through this broker uses Codex OAuth
-instead of an OpenAI API billing key.
+requests. Set `contextWindow` to `500000` for `gpt-6.1-sol` and `272000` for
+the other GPT-6 models; `GET /v1/models` reports the same values. Cost metadata
+should use the equivalent OpenAI API per-million-token prices for reporting,
+even though traffic through this broker uses Codex OAuth instead of an OpenAI
+API billing key.
 
 ## Factory Droid Over Tailscale
 
@@ -540,7 +542,7 @@ Flags and equivalent environment variables:
 | `--prompt-cache-retention` | `CODEX_AUTH_BROKER_PROMPT_CACHE_RETENTION` | records legacy client intent for compatibility; never forwarded |
 | `--usage-url` | `CODEX_AUTH_BROKER_USAGE_URL` | ChatGPT wham usage endpoint |
 | `--models-url` | `CODEX_AUTH_BROKER_MODELS_URL` | ChatGPT Codex models endpoint |
-| n/a | `CODEX_AUTH_BROKER_MODELS_CLIENT_VERSION` | `0.158.0` (`client_version` sent to the Codex models endpoint) |
+| n/a | `CODEX_AUTH_BROKER_MODELS_CLIENT_VERSION` | `0.162.1` (`client_version` sent to the Codex models endpoint; older values hide `gpt-6.1-sol`) |
 | `--max-concurrent` | `CODEX_AUTH_BROKER_MAX_CONCURRENT` | `8`; cap on simultaneous upstream Codex calls, `0` = unlimited (see [Concurrency Cap](#concurrency-cap)) |
 | `--request-log-max-bytes` | `CODEX_AUTH_BROKER_REQUEST_LOG_MAX_BYTES` | `67108864` (64 MiB); `0` keeps unlimited history |
 | `--request-log-limit` | `CODEX_AUTH_BROKER_REQUEST_LOG_LIMIT` | `1000` |

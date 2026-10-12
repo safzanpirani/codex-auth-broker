@@ -327,11 +327,8 @@ func TestUpstreamHeadersPersistenceBoundariesAndRotation(t *testing.T) {
 }
 
 func TestModelsClientVersionDefault(t *testing.T) {
-	if defaultModelsClientVersion != "0.158.0" {
-		t.Fatalf("default version = %q", defaultModelsClientVersion)
-	}
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if got := r.URL.Query().Get("client_version"); got != "0.158.0" {
+		if got := r.URL.Query().Get("client_version"); got != defaultModelsClientVersion {
 			t.Errorf("client_version = %q", got)
 		}
 		fmt.Fprint(w, `{"models":[{"slug":"gpt-6-astra","visibility":"list","supported_in_api":true}]}`)

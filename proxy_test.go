@@ -829,6 +829,35 @@ func TestAuthorizedClient(t *testing.T) {
 	}
 }
 
+func TestModelsAdvertiseContextWindows(t *testing.T) {
+	proxy := &responsesProxy{
+		cfg:      config{models: []string{"gpt-6.1-sol", "gpt-6.1-sol(max)", "gpt-6.1-sol-2026-10-01", "gpt-6-astra(high)", "gpt-6-luna", "gpt-5.5"}},
+		requests: newRequestLogStore(10),
+	}
+	w := httptest.NewRecorder()
+	proxy.handleModels(w, httptest.NewRequest(http.MethodGet, "/v1/models", nil))
+	var resp struct {
+		Data []map[string]any `json:"data"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatal(err)
+	}
+	want := map[string]float64{"gpt-6.1-sol": 500_000, "gpt-6.1-sol(max)": 500_000, "gpt-6.1-sol-2026-10-01": 500_000, "gpt-6-astra(high)": 272_000, "gpt-6-luna": 272_000}
+	for _, entry := range resp.Data {
+		id := entry["id"].(string)
+		window, known := want[id]
+		if !known {
+			if _, ok := entry["context_window"]; ok {
+				t.Fatalf("%s advertised a context window without a known default", id)
+			}
+			continue
+		}
+		if entry["context_window"] != window || entry["context_length"] != window {
+			t.Fatalf("%s window = %v/%v, want %v", id, entry["context_window"], entry["context_length"], window)
+		}
+	}
+}
+
 func TestHandlersRequireBearerKey(t *testing.T) {
 	proxy := &responsesProxy{
 		cfg:      config{apiKey: "secret-key"},

@@ -112,15 +112,48 @@ func (p *responsesProxy) handleModels(w http.ResponseWriter, r *http.Request) {
 	now := time.Now().Unix()
 	models := make([]map[string]any, 0, len(ids))
 	for _, model := range ids {
-		models = append(models, map[string]any{
+		entry := map[string]any{
 			"id":       model,
 			"object":   "model",
 			"created":  now,
 			"owned_by": "codex-auth-broker",
-		})
+		}
+		if window, ok := modelContextWindow(model); ok {
+			// context_window is the Codex catalog name; context_length is what
+			// generic OpenAI-compatible model discovery reads.
+			entry["context_window"] = window
+			entry["context_length"] = window
+		}
+		models = append(models, entry)
 	}
 	logEntry.markStatus(http.StatusOK)
 	writeJSON(w, http.StatusOK, map[string]any{"object": "list", "data": models})
+}
+
+// modelContextWindows holds the default Codex context window per model, in
+// tokens. GPT-6.1 Sol defaults to 500K through Codex; the other GPT-6 models
+// stay at 272K. Models without an entry advertise no window.
+var modelContextWindows = map[string]int64{
+	"gpt-6.1-sol": 500_000,
+	"gpt-6-astra": 272_000,
+	"gpt-6-sol":   272_000,
+	"gpt-6-luna":  272_000,
+}
+
+// modelContextWindow resolves a client-facing model id, including effort
+// suffixes and dated snapshots, to its default context window.
+func modelContextWindow(id string) (int64, bool) {
+	model, _ := normalizeFactoryModel(id)
+	model = strings.ToLower(model)
+	if window, ok := modelContextWindows[model]; ok {
+		return window, true
+	}
+	for candidate, window := range modelContextWindows {
+		if isDatedModelSnapshot(model, candidate) {
+			return window, true
+		}
+	}
+	return 0, false
 }
 
 // upstreamModel is the subset of the Codex models endpoint response we consume.
