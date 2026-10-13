@@ -13,6 +13,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 	"unicode"
 	"unicode/utf8"
@@ -45,8 +46,9 @@ type responsesProxy struct {
 	limiter *concurrencyLimiter
 	// keys resolves bearer tokens to named clients. nil falls back to an
 	// implicit registry built from cfg.apiKey (see registry()).
-	keys      *keyRegistry
-	liveCalls liveCallStore
+	keys        *keyRegistry
+	liveCalls   liveCallStore
+	tierCatalog sync.Map // *account -> *accountTierCatalog
 }
 
 // dispatchFailure describes why the failover loop could not return a usable
@@ -158,9 +160,12 @@ func modelContextWindow(id string) (int64, bool) {
 
 // upstreamModel is the subset of the Codex models endpoint response we consume.
 type upstreamModel struct {
-	Slug                     string `json:"slug"`
-	Visibility               string `json:"visibility"`
-	SupportedInAPI           bool   `json:"supported_in_api"`
+	Slug           string `json:"slug"`
+	Visibility     string `json:"visibility"`
+	SupportedInAPI bool   `json:"supported_in_api"`
+	ServiceTiers   []struct {
+		ID string `json:"id"`
+	} `json:"service_tiers"`
 	SupportedReasoningLevels []struct {
 		Effort string `json:"effort"`
 	} `json:"supported_reasoning_levels"`
@@ -171,7 +176,28 @@ type upstreamModel struct {
 // the bare slug followed by one "slug(effort)" variant per supported reasoning
 // level. Only models with visibility "list" and supported_in_api are included.
 func (p *responsesProxy) fetchUpstreamModelIDs(ctx context.Context) ([]string, error) {
-	acct := p.pool.preferred(time.Now())
+	models, err := p.fetchUpstreamModels(ctx, p.pool.preferred(time.Now()))
+	if err != nil {
+		return nil, err
+	}
+	ids := make([]string, 0, len(models)*5)
+	for _, m := range models {
+		if m.Slug == "" || m.Visibility != "list" || !m.SupportedInAPI {
+			continue
+		}
+		ids = append(ids, m.Slug)
+		seen := map[string]bool{}
+		for _, level := range m.SupportedReasoningLevels {
+			if effort := normalizeReasoningEffort(level.Effort); effort != "" && !seen[effort] {
+				seen[effort] = true
+				ids = append(ids, m.Slug+"("+effort+")")
+			}
+		}
+	}
+	return ids, nil
+}
+
+func (p *responsesProxy) fetchUpstreamModels(ctx context.Context, acct *account) ([]upstreamModel, error) {
 	if acct == nil {
 		return nil, errors.New("no Codex accounts configured")
 	}
@@ -215,21 +241,7 @@ func (p *responsesProxy) fetchUpstreamModelIDs(ctx context.Context) ([]string, e
 		return nil, fmt.Errorf("decode upstream models failed: %w", err)
 	}
 
-	ids := make([]string, 0, len(parsed.Models)*5)
-	for _, m := range parsed.Models {
-		if m.Slug == "" || m.Visibility != "list" || !m.SupportedInAPI {
-			continue
-		}
-		ids = append(ids, m.Slug)
-		seen := map[string]bool{}
-		for _, level := range m.SupportedReasoningLevels {
-			if effort := normalizeReasoningEffort(level.Effort); effort != "" && !seen[effort] {
-				seen[effort] = true
-				ids = append(ids, m.Slug+"("+effort+")")
-			}
-		}
-	}
-	return ids, nil
+	return parsed.Models, nil
 }
 
 func (p *responsesProxy) handleResponses(w http.ResponseWriter, r *http.Request) {
@@ -355,7 +367,19 @@ func (p *responsesProxy) dispatchUpstream(ctx context.Context, encoded []byte, i
 			log.Printf("codex account %s auth failed: %v; rotating", acct.label, err)
 			continue
 		}
-		req, err := p.buildUpstreamRequest(ctx, encoded, info, body, r, access)
+		// Validate after account selection, including each failover attempt: tier
+		// eligibility is account-specific. Keep requested intent in info/logs.
+		wireBody, wireEncoded := body, encoded
+		if tier := stringField(body, "service_tier"); tier == "priority" && !p.accountSupportsTier(ctx, acct, info.NormalizedModel, tier) {
+			wireBody = copyMap(body)
+			delete(wireBody, "service_tier")
+			wireBody["stream"] = true
+			wireEncoded, err = json.Marshal(wireBody)
+			if err != nil {
+				return nil, &dispatchFailure{status: http.StatusBadGateway, message: "encode upstream request failed"}
+			}
+		}
+		req, err := p.buildUpstreamRequest(ctx, wireEncoded, info, wireBody, r, access)
 		if err != nil {
 			return nil, &dispatchFailure{status: http.StatusBadGateway, message: "build upstream request failed"}
 		}
@@ -841,7 +865,8 @@ func normalizeServiceTier(body map[string]any, model string) string {
 		}
 		body["service_tier"] = normalized
 	case "priority", "flex":
-		// TODO(review): Filter tiers against the selected model's live service_tiers once that catalog metadata is available in this path.
+		// Account-specific catalog filtering happens at dispatch, after selecting
+		// the account. Flex is an API option even when absent from the catalog.
 		body["service_tier"] = normalized
 	case "auto", "default":
 		// The public API accepts these values, but the ChatGPT Codex backend

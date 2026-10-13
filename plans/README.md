@@ -154,5 +154,9 @@ design/spike plan, not build-everything:
 - No runtime/integration testing against the real Codex backend (the audit was
   static + the existing test suite). The backend contract is explicitly not a
   stability guarantee (README "Limitations").
-- Load/concurrency behavior under high parallel request volume was reasoned
-  about, not measured.
+- Real-backend load/concurrency behavior under high parallel request volume
+  remains unmeasured. Offline catalog regression tests now exercise 64-request
+  local HTTP bursts with a concurrency limit, account-specific tier eligibility,
+  failover, and cancellation; they do not establish real Codex capacity or tier
+  acceptance. Live inference/load checks require permission to consume account
+  allowance and are not part of these offline tests.

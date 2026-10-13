@@ -42,6 +42,12 @@ Chat Completions accepts `service_tier` or `serviceTier`. Values `fast` and
 header. Explicit `auto` and `default` are omitted; omit the field for Standard
 routing.
 
+Priority is checked against the selected account's live model catalog; when
+unadvertised, both the body tier and routing-hint tier are omitted. Catalog
+outages preserve the requested tier and log that validation was unavailable.
+Flex is accepted even when absent from the catalog, matching official Codex.
+See [catalog validation details](responses-api.md#fast-mode-and-service-tiers).
+
 Both non-streaming completions and streaming chunks report `service_tier` only
 when the upstream Responses event reports it, and use the upstream-applied
 value. A returned `default` therefore means the backend did not apply Fast mode

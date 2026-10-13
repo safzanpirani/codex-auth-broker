@@ -182,6 +182,10 @@ Compatibility normalizations:
 - `service_tier: "fast"` and `"priority"` both become the official Codex Fast
   mode wire value `"priority"` and the matching `x-codex-routing-hint` header.
   Explicit `auto` and `default` are omitted for the ChatGPT Codex backend.
+  Priority is checked against the selected account's live `service_tiers` at
+  dispatch; unadvertised priority is omitted from both body and routing hint.
+  Discovery failures are logged and retain the request without validation.
+  Flex remains valid even when absent from the catalog, matching official Codex.
 - String `input` becomes a Responses input item list.
 - Missing `instructions` gets a compact default.
 - Missing `store` becomes `false`.

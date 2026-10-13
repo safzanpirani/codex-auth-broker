@@ -83,7 +83,7 @@ func (p *responsesProxy) handleResponsesWebSocket(w http.ResponseWriter, r *http
 	upstream.SetReadLimit(maxRequestBodyBytes)
 
 	log.Printf("responses websocket connected account=%s", acct.label)
-	tracker := &webSocketTurnTracker{proxy: p, request: r, account: acct}
+	tracker := &webSocketTurnTracker{proxy: p, request: r.WithContext(ctx), account: acct}
 	errorsCh := make(chan error, 2)
 	go func() {
 		errorsCh <- p.copyWebSocketClientToUpstream(ctx, downstream, upstream, tracker)
@@ -135,6 +135,12 @@ func (p *responsesProxy) dialResponsesWebSocket(ctx context.Context, r *http.Req
 			continue
 		}
 		headers := p.responsesWebSocketHeaders(r, access)
+		if hint := headers.Get(codexRoutingHintHeader); strings.HasSuffix(hint, ";tier=priority") {
+			model := strings.TrimPrefix(strings.TrimSuffix(hint, ";tier=priority"), "model=")
+			if !p.accountSupportsTier(ctx, acct, model, "priority") {
+				headers.Set(codexRoutingHintHeader, buildCodexRoutingHint(model, ""))
+			}
+		}
 		conn, response, err := websocket.Dial(ctx, p.cfg.upstreamURL, &websocket.DialOptions{
 			HTTPClient:      webSocketHTTPClient(p.client),
 			HTTPHeader:      headers,
@@ -241,6 +247,9 @@ func (p *responsesProxy) normalizeWebSocketClientEvent(payload []byte, tracker *
 	}
 	event["stream"] = true
 	info := normalizeResponsesBody(event, p.cfg, tracker.request)
+	if stringField(event, "service_tier") == "priority" && tracker.account != nil && !p.accountSupportsTier(tracker.request.Context(), tracker.account, info.NormalizedModel, "priority") {
+		delete(event, "service_tier")
+	}
 	tracker.begin(event, info)
 	return json.Marshal(event)
 }

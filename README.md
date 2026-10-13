@@ -144,6 +144,14 @@ auth, so new models appear automatically as the Codex backend adds them. It
 returns `502` if that upstream fetch fails. Set `--models` /
 `CODEX_AUTH_BROKER_MODELS` to serve a fixed list instead.
 
+Fast/priority requests validate the selected account's live `service_tiers`
+before submission (including failover, WebSocket hints/events, and compaction).
+An unadvertised priority tier is omitted for Standard routing; requested and
+upstream-applied tiers remain separately visible in request history. Catalogs
+are cached per account for five minutes with one fetch per concurrent burst.
+Discovery failures are logged and preserve the requested tier without claiming
+compatibility validation. Flex remains an API option even when not advertised.
+
 Real Responses call:
 
 ```bash
@@ -685,6 +693,9 @@ probe it.
 - This is not a full OpenAI API clone.
 - The Codex backend is not a public stability contract; compatibility can
   change when Codex changes.
+- Offline concurrency regressions exercise local fixtures, not real Codex
+  inference or backend load. Catalog eligibility does not guarantee the backend
+  will honor a tier; inspect the upstream-applied tier in request history.
 - This project is not affiliated with OpenAI.
 
 ## Development

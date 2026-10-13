@@ -276,6 +276,25 @@ request body plus `x-codex-routing-hint: model=<model>;tier=priority` on HTTP
 requests. `serviceTier` is accepted as a camel-case input alias. `flex` retains
 its own wire value.
 
+Before submitting a priority request, the broker checks the selected account's
+live model `service_tiers`. If the model does not advertise priority, the body
+field and routing-hint tier are omitted together for Standard routing. This
+check follows account selection on every failover attempt and also covers
+WebSocket handshakes/events and native compaction. Exact model slugs take
+precedence over dated-snapshot matching. Requested intent stays in request
+history alongside the tier the backend actually applied.
+
+Catalog fetches have a ten-second deadline, are shared by concurrent requests,
+and cache successful results per account for five minutes. On discovery errors,
+the broker logs that validation was unavailable and forwards the requested tier;
+failed discovery is retried after thirty seconds. A canceled fetch does not
+cache a failure for other callers. Static `--models` discovery lists do not
+replace account eligibility metadata.
+
+Flex is deliberately not filtered: [the official Codex protocol accepts Flex
+without catalog support](https://github.com/openai/codex/blob/main/codex-rs/protocol/src/openai_models.rs).
+Thus absence from `service_tiers` is not evidence that Flex is incompatible.
+
 ### Ultrafast (Pro 500 plan)
 
 `ultrafast` is the top service tier. It is available on the ChatGPT Pro 500

@@ -83,14 +83,30 @@ func (p *responsesProxy) postSubscription(ctx context.Context, endpoint string, 
 			lastFailure = &dispatchFailure{status: http.StatusBadGateway, message: "Codex authentication failed"}
 			continue
 		}
-		req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(payload))
+		wirePayload, wireHeaders := payload, headers
+		if strings.HasSuffix(endpoint, "/responses/compact") && strings.HasSuffix(headers.Get(codexRoutingHintHeader), ";tier=priority") {
+			var body map[string]any
+			if err := json.Unmarshal(payload, &body); err != nil {
+				return nil, nil, &dispatchFailure{status: http.StatusBadGateway, message: "invalid compaction payload"}
+			}
+			if !p.accountSupportsTier(ctx, acct, stringField(body, "model"), "priority") {
+				delete(body, "service_tier")
+				wirePayload, err = json.Marshal(body)
+				if err != nil {
+					return nil, nil, &dispatchFailure{status: http.StatusBadGateway, message: "encode compaction payload failed"}
+				}
+				wireHeaders = headers.Clone()
+				wireHeaders.Set(codexRoutingHintHeader, buildCodexRoutingHint(stringField(body, "model"), ""))
+			}
+		}
+		req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(wirePayload))
 		if err != nil {
 			return nil, nil, &dispatchFailure{status: http.StatusBadGateway, message: "invalid capability upstream URL"}
 		}
 		req.Header.Set("Authorization", "Bearer "+access.AccessToken)
 		req.Header.Set("ChatGPT-Account-Id", access.AccountID)
 		req.Header.Set("Content-Type", "application/json")
-		for key, values := range headers {
+		for key, values := range wireHeaders {
 			req.Header[key] = append([]string(nil), values...)
 		}
 		p.setClientIdentity(req)
@@ -171,8 +187,10 @@ func (p *responsesProxy) handleCompact(w http.ResponseWriter, r *http.Request) {
 	}
 	model, _ := normalizeFactoryModel(stringField(body, "model"))
 	body["model"] = model
+	tier := normalizeServiceTier(body, model)
 	if entry != nil {
 		entry.Entry.Model, entry.Entry.NormalizedModel = model, model
+		entry.Entry.ServiceTier = tier
 	}
 	endpoint, err := p.codexEndpoint("responses/compact")
 	if err != nil {
