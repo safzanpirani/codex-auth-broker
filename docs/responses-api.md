@@ -480,6 +480,15 @@ back to a session id derived from the request, then to its configured constant
 (unset by default); sending your own stable key is still preferred, since it
 also makes dashboard rows easier to reason about.
 
+The ChatGPT Codex backend routes cache lookups by the `session-id` request
+header, not by `prompt_cache_key` in the body. The broker fills that header for
+you: it forwards your `session-id` (or `session_id`) header if you send one,
+and otherwise copies the resolved `prompt_cache_key` into it. Keep whichever
+one you send stable for the whole conversation. A value that changes on every
+request never hits the cache. Signed-in Codex accounts keep their prompt cache
+indefinitely, so a conversation resumed hours later still hits it when the key
+matches.
+
 Do not send `prompt_cache_retention`. For the GPT-6 family, send
 `prompt_cache_options` when you need its supported cache TTL. The broker strips
 that object for older models and preserves `prompt_cache_key` for all models.
@@ -487,10 +496,10 @@ OpenAI documents GPT-5.5 and GPT-5.4 as extended-retention models with entries
 retained for up to 24 hours. GPT-5.6 uses a newer policy with a 30-minute
 minimum lifetime and possible longer retention.
 
-The response does not report the chosen retention policy. It reports only
-actual cache reads through `usage.input_tokens_details.cached_tokens`, so a
-zero on the first eligible request is expected and does not prove that cache
-retention is disabled.
+The response reports `"prompt_cache_retention": "24h"` on ChatGPT-plan
+traffic, which does not reflect the account's actual retention. Actual cache
+reads show up in `usage.input_tokens_details.cached_tokens`, so a zero on the
+first eligible request is expected and does not prove that caching is off.
 
 How to verify prompt caching:
 

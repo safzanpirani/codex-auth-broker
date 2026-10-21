@@ -26,6 +26,15 @@ OAuth login, while keeping the real refresh token local.
 - Factory Droid 0.122 sends extra OpenAI SDK fields; keep
   `prompt_cache_retention`, `stream_options`, `user`, and max-token aliases
   stripped before forwarding to the Codex backend.
+- The Codex backend routes prompt-cache hits by the `session-id` request
+  header; body `prompt_cache_key` alone never hits. `setCacheRoutingHeaders`
+  (proxy.go) sets it from the client's `session-id`/`session_id` header, else the
+  resolved `prompt_cache_key`. Never fill it from a per-request id
+  (`x-request-id`, `x-client-request-id`): that gives zero cache hits. Every
+  upstream path (HTTP, WebSocket, compaction) must forward it.
+- Releases: push a `v*` tag (annotated, like earlier tags);
+  `.github/workflows/release.yml` builds the platform archives and publishes the
+  GitHub release.
 - The dashboard is intentionally served by this Go binary. Keep it dependency
   free unless there is a strong reason to add a frontend build step.
 - Dashboard request history may be persisted as metadata-only JSONL (see
