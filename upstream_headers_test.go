@@ -201,8 +201,8 @@ func TestUpstreamHeadersHTTPAndPersistence(t *testing.T) {
 						t.Fatal(err)
 					}
 					clientHeaders := w.Result().Header.Clone()
-					if path == "/v1/responses/compact" {
-						// Compaction intentionally relays turn state to the client.
+					if path == "/v1/responses/compact" || path == "/v1/responses" {
+						// Responses and compaction intentionally relay turn state to the client.
 						clientHeaders.Del("X-Codex-Turn-State")
 					}
 					for _, private := range []string{secret, "private prompt sentinel"} {

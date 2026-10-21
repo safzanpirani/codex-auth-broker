@@ -210,10 +210,9 @@ func (p *responsesProxy) handleCompact(w http.ResponseWriter, r *http.Request) {
 	if features := codexBetaFeatures(r, false); features != "" {
 		headers.Set(codexBetaFeaturesHeader, features)
 	}
-	for _, key := range []string{"x-codex-turn-state", "session_id", "x-client-request-id"} {
-		if value := r.Header.Get(key); value != "" {
-			headers.Set(key, value)
-		}
+	setCacheRoutingHeaders(headers, r, stringField(body, "prompt_cache_key"))
+	if value := r.Header.Get("x-client-request-id"); value != "" {
+		headers.Set("x-client-request-id", value)
 	}
 	resp, _, fail := p.postSubscription(r.Context(), endpoint, payload, headers)
 	if fail != nil {

@@ -290,6 +290,9 @@ func (p *responsesProxy) handleResponses(w http.ResponseWriter, r *http.Request)
 	defer resp.Body.Close()
 	logEntry.markUpstreamStatus(resp.StatusCode)
 	captureUpstreamHeaders(w, logEntry, resp.Header)
+	if state := resp.Header.Get("x-codex-turn-state"); state != "" {
+		w.Header().Set("x-codex-turn-state", state)
+	}
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		responseBody, _ := io.ReadAll(io.LimitReader(resp.Body, 64*1024))
@@ -442,8 +445,8 @@ func (p *responsesProxy) buildUpstreamRequest(ctx context.Context, encoded []byt
 	if features := codexBetaFeatures(r, info.CompactionTrigger); features != "" {
 		req.Header.Set(codexBetaFeaturesHeader, features)
 	}
+	setCacheRoutingHeaders(req.Header, r, info.PromptCacheKey)
 	if id := requestID(r, body); id != "" {
-		req.Header.Set("session_id", id)
 		req.Header.Set("x-client-request-id", id)
 	}
 	return req, nil
@@ -1056,10 +1059,41 @@ func stablePromptCacheKey(r *http.Request, body map[string]any) string {
 			return value
 		}
 	}
-	if value := strings.TrimSpace(r.Header.Get("session_id")); value != "" {
-		return value
+	return clientSessionID(r)
+}
+
+// clientSessionID returns the session id a client sent as a header. Codex
+// sends "session-id"; older clients send "session_id".
+func clientSessionID(r *http.Request) string {
+	for _, key := range []string{"session-id", "session_id"} {
+		if value := strings.TrimSpace(r.Header.Get(key)); value != "" {
+			return value
+		}
 	}
 	return ""
+}
+
+// setCacheRoutingHeaders sets the headers the ChatGPT Codex backend uses to
+// route a request to its prompt cache. The backend keys cache affinity on the
+// session-id header, not on the body's prompt_cache_key: a request with a
+// stable prompt_cache_key and no session-id never hits the cache, and a
+// session-id that changes per request misses every time. For logged-in Codex
+// accounts the backend keeps that cache indefinitely, so a stable session-id
+// lets a conversation resumed hours later still hit it.
+//
+// The client's own session id wins, as in Codex, where sub-agents send their
+// real session id while sharing the parent's prompt_cache_key. Otherwise the
+// prompt_cache_key stands in, which is what Codex sends for root threads.
+// thread-id and x-codex-turn-state pass through for sticky routing.
+func setCacheRoutingHeaders(dst http.Header, r *http.Request, promptCacheKey string) {
+	if id := valueOr(clientSessionID(r), strings.TrimSpace(promptCacheKey)); id != "" {
+		dst.Set("session-id", id)
+	}
+	for _, key := range []string{"thread-id", "x-codex-turn-state"} {
+		if value := strings.TrimSpace(r.Header.Get(key)); value != "" {
+			dst.Set(key, value)
+		}
+	}
 }
 
 type indexedItem struct {

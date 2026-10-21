@@ -255,6 +255,16 @@ unset by default: with no key the backend hashes the prefix unscoped, which is
 strictly better than a colliding one. Set `--prompt-cache-key <value>` only when
 a fleet of otherwise-anonymous clients really should share one cache bucket.
 
+The ChatGPT Codex backend routes cache lookups by the `session-id` request
+header. A request that sends a stable `prompt_cache_key` but no `session-id`
+does not hit the cache, and a `session-id` that changes on every request misses
+every time. The broker forwards the client's `session-id` (or legacy
+`session_id`) header when one is present. Otherwise it sets `session-id` to the
+resolved `prompt_cache_key`, which matches what the Codex CLI sends for a root
+thread. The `thread-id` and `x-codex-turn-state` headers pass through, and the
+broker returns the upstream `x-codex-turn-state` on HTTP Responses so a client
+can replay it within a turn.
+
 The broker strips the legacy `prompt_cache_retention` field. For the GPT-6
 family (Astra, Sol, Sol 6.1, Luna),
 the broker forwards `prompt_cache_options` so clients can request the current
@@ -262,10 +272,12 @@ cache TTL. It strips that object for older models because the ChatGPT Codex
 OAuth endpoint rejects it. The broker preserves `prompt_cache_key` for every
 model.
 
-This does not disable extended caching. OpenAI documents GPT-5.5 and GPT-5.4 as
-supporting extended prompt retention for up to 24 hours; GPT-5.6 instead uses a
-30-minute minimum lifetime and may retain entries longer. The exact retention
-policy of ChatGPT-plan Codex traffic is not exposed in the response, so verify
+OpenAI documents GPT-5.5 and GPT-5.4 as supporting extended prompt retention for
+up to 24 hours; GPT-5.6 instead uses a 30-minute minimum lifetime and may retain
+entries longer. On 2026-10-20 OpenAI's Codex lead announced that Codex keeps the
+prompt cache indefinitely for signed-in ChatGPT accounts, so resuming an old
+conversation through the broker hits the cache as long as its `session-id`
+matches. The response still reports `"prompt_cache_retention": "24h"`. Verify
 actual reuse with `usage.input_tokens_details.cached_tokens` on Responses or
 `usage.prompt_tokens_details.cached_tokens` on Chat Completions.
 

@@ -711,6 +711,41 @@ func TestBuildUpstreamRequestOmitsBetaFeaturesByDefault(t *testing.T) {
 	}
 }
 
+// The Codex backend keys prompt-cache affinity on the session-id header; a
+// per-request id there gives a cold cache on every turn.
+func TestBuildUpstreamRequestSessionIDFollowsCacheKey(t *testing.T) {
+	p := &responsesProxy{cfg: config{upstreamURL: "https://example.invalid/codex/responses"}}
+	cases := []struct {
+		name        string
+		headers     map[string]string
+		wantSession string
+	}{
+		{"rotating request id", map[string]string{"x-request-id": "req-unique-1", "x-client-request-id": "req-unique-2"}, "conv-key"},
+		{"codex session header", map[string]string{"session-id": "sess-1", "thread-id": "thread-1"}, "sess-1"},
+		{"legacy session header", map[string]string{"session_id": "sess-legacy"}, "sess-legacy"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			body := map[string]any{"model": "gpt-5.5", "input": "hello", "prompt_cache_key": "conv-key"}
+			r := httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
+			for k, v := range tc.headers {
+				r.Header.Set(k, v)
+			}
+			info := normalizeResponsesBody(body, config{}, r)
+			req, err := p.buildUpstreamRequest(context.Background(), []byte("{}"), info, body, r, accessMaterial{AccessToken: "tok", AccountID: "acct"})
+			if err != nil {
+				t.Fatalf("buildUpstreamRequest: %v", err)
+			}
+			if got := req.Header.Get("session-id"); got != tc.wantSession {
+				t.Fatalf("session-id = %q, want %q", got, tc.wantSession)
+			}
+			if got := req.Header.Get("thread-id"); got != tc.headers["thread-id"] {
+				t.Fatalf("thread-id = %q, want %q", got, tc.headers["thread-id"])
+			}
+		})
+	}
+}
+
 func TestNormalizeInputPreservesWhitespace(t *testing.T) {
 	for _, input := range []string{"  indented\n\n", " \t\n"} {
 		body := map[string]any{"input": input}
