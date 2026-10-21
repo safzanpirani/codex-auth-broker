@@ -746,6 +746,37 @@ func TestBuildUpstreamRequestSessionIDFollowsCacheKey(t *testing.T) {
 	}
 }
 
+// The WebSocket handshake carries the session-id for the whole connection. A
+// client with no session header must still get a stable one, or every turn on
+// the socket misses the prompt cache.
+func TestResponsesWebSocketHeadersSessionID(t *testing.T) {
+	p := &responsesProxy{cfg: config{promptCacheKey: "factory-droid"}}
+	cases := []struct {
+		name        string
+		headers     map[string]string
+		wantSession string
+	}{
+		{"no session header", map[string]string{"x-client-request-id": "req-unique"}, "factory-droid"},
+		{"codex session header", map[string]string{"session-id": "sess-1", "thread-id": "thread-1"}, "sess-1"},
+		{"legacy session header", map[string]string{"session_id": "sess-legacy"}, "sess-legacy"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			r := httptest.NewRequest(http.MethodGet, "/v1/responses", nil)
+			for k, v := range tc.headers {
+				r.Header.Set(k, v)
+			}
+			headers := p.responsesWebSocketHeaders(r, accessMaterial{AccessToken: "tok", AccountID: "acct"})
+			if got := headers.Values("session-id"); len(got) != 1 || got[0] != tc.wantSession {
+				t.Fatalf("session-id = %q, want [%q]", got, tc.wantSession)
+			}
+			if got := headers.Get("thread-id"); got != tc.headers["thread-id"] {
+				t.Fatalf("thread-id = %q, want %q", got, tc.headers["thread-id"])
+			}
+		})
+	}
+}
+
 func TestNormalizeInputPreservesWhitespace(t *testing.T) {
 	for _, input := range []string{"  indented\n\n", " \t\n"} {
 		body := map[string]any{"input": input}

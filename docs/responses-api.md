@@ -485,9 +485,13 @@ header, not by `prompt_cache_key` in the body. The broker fills that header for
 you: it forwards your `session-id` (or `session_id`) header if you send one,
 and otherwise copies the resolved `prompt_cache_key` into it. Keep whichever
 one you send stable for the whole conversation. A value that changes on every
-request never hits the cache. Signed-in Codex accounts keep their prompt cache
-indefinitely, so a conversation resumed hours later still hits it when the key
-matches.
+request never hits the cache. A WebSocket connection sets the header once at
+the handshake, before the broker sees any `prompt_cache_key`. Turns on one
+socket share its cache either way, but a new socket reuses the earlier cache
+only with the same `session-id`. WebSocket clients should send their own
+`session-id` header; without one the broker uses `--prompt-cache-key` when it
+is set. Signed-in Codex accounts keep their prompt cache indefinitely, so a
+conversation resumed hours later still hits it when the key matches.
 
 Do not send `prompt_cache_retention`. For the GPT-6 family, send
 `prompt_cache_options` when you need its supported cache TTL. The broker strips

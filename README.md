@@ -263,7 +263,12 @@ every time. The broker forwards the client's `session-id` (or legacy
 resolved `prompt_cache_key`, which matches what the Codex CLI sends for a root
 thread. The `thread-id` and `x-codex-turn-state` headers pass through, and the
 broker returns the upstream `x-codex-turn-state` on HTTP Responses so a client
-can replay it within a turn.
+can replay it within a turn. A Responses WebSocket sets `session-id` once, at
+the handshake, before the broker has seen any `prompt_cache_key`. Turns on one
+socket share its cache either way. A new socket, including a reconnect after
+the 60-minute limit, hits the earlier cache only with the same `session-id`.
+WebSocket clients should therefore send their own `session-id` header; without
+one the broker uses `--prompt-cache-key` when it is set.
 
 The broker strips the legacy `prompt_cache_retention` field. For the GPT-6
 family (Astra, Sol, Sol 6.1, Luna),

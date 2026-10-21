@@ -175,7 +175,6 @@ func (p *responsesProxy) responsesWebSocketHeaders(r *http.Request, access acces
 	}
 	for _, key := range []string{
 		codexBetaFeaturesHeader,
-		"x-codex-turn-state",
 		"x-codex-turn-metadata",
 		"x-codex-parent-thread-id",
 		"x-codex-window-id",
@@ -184,9 +183,6 @@ func (p *responsesProxy) responsesWebSocketHeaders(r *http.Request, access acces
 		"x-openai-internal-codex-responses-lite",
 		"x-openai-subagent",
 		"x-openai-memgen-request",
-		"session-id",
-		"session_id",
-		"thread-id",
 		"x-client-request-id",
 		"traceparent",
 		"tracestate",
@@ -195,6 +191,11 @@ func (p *responsesProxy) responsesWebSocketHeaders(r *http.Request, access acces
 			headers[http.CanonicalHeaderKey(key)] = append([]string(nil), values...)
 		}
 	}
+	// The handshake happens before the first response.create, so the body's
+	// prompt_cache_key is not known yet. A client without its own session
+	// header gets the configured key, the same fallback the HTTP path applies
+	// to keyless requests.
+	setCacheRoutingHeaders(headers, r, p.cfg.promptCacheKey)
 	if routingHint := normalizeCodexRoutingHint(r.Header.Get(codexRoutingHintHeader)); routingHint != "" {
 		headers.Set(codexRoutingHintHeader, routingHint)
 	}
