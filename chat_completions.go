@@ -43,8 +43,8 @@ func (p *responsesProxy) handleChatCompletions(w http.ResponseWriter, r *http.Re
 	info := normalizeResponsesBody(body, p.cfg, r)
 	logEntry.markRequest(body, info, r)
 	log.Printf("chat completions request model=%s normalized=%s service_tier=%s stream=%t prompt_cache_key=%t prompt_cache_retention=%s",
-		info.Model, info.NormalizedModel, info.ServiceTier, info.Stream,
-		info.PromptCacheKeySet, valueOr(info.PromptCacheRetention, "none"))
+		truncateLogField(info.Model, 256), truncateLogField(info.NormalizedModel, 256), info.ServiceTier, info.Stream,
+		info.PromptCacheKeySet, truncateLogField(valueOr(info.PromptCacheRetention, "none"), 64))
 
 	// The ChatGPT Codex endpoint streams Responses events even when the
 	// downstream Chat Completions client requested one final JSON object.

@@ -12,6 +12,7 @@ import (
 	"sync"
 	"testing"
 	"time"
+	"unicode"
 )
 
 func reviewLog(t *testing.T, maxBytes int64) *requestLogFile {
@@ -312,6 +313,13 @@ func TestReviewTruncateLogFieldRespectsByteCap(t *testing.T) {
 		if got := truncateLogField(strings.Repeat("normal text ", 100), size); len(got) > size {
 			t.Fatalf("limit=%d result bytes=%d", size, len(got))
 		}
+	}
+}
+
+func TestReviewTruncateLogFieldStripsControlCharacters(t *testing.T) {
+	got := truncateLogField("gpt-6-sol\n2026/10/22 00:00:00 forged\r\x1b[2J", 256)
+	if strings.IndexFunc(got, unicode.IsControl) != -1 {
+		t.Fatalf("control characters survived: %q", got)
 	}
 }
 

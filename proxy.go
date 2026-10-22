@@ -261,7 +261,8 @@ func (p *responsesProxy) handleResponses(w http.ResponseWriter, r *http.Request)
 	info := normalizeResponsesBody(body, p.cfg, r)
 	logEntry.markRequest(body, info, r)
 	log.Printf("responses request model=%s normalized=%s service_tier=%s stream=%t prompt_cache_key=%t prompt_cache_retention=%s",
-		info.Model, info.NormalizedModel, info.ServiceTier, info.Stream, info.PromptCacheKeySet, valueOr(info.PromptCacheRetention, "none"))
+		truncateLogField(info.Model, 256), truncateLogField(info.NormalizedModel, 256), info.ServiceTier, info.Stream,
+		info.PromptCacheKeySet, truncateLogField(valueOr(info.PromptCacheRetention, "none"), 64))
 
 	upstreamBody := body
 	if !info.Stream {
@@ -811,7 +812,7 @@ func recordAppliedServiceTier(logEntry *pendingRequestLog, requested, applied st
 	}
 	honored := applied != "" && applied == requested
 	log.Printf("service_tier requested=%s applied=%s honored=%t",
-		valueOr(requested, "none"), valueOr(applied, "none"), honored)
+		valueOr(requested, "none"), truncateLogField(valueOr(applied, "none"), 64), honored)
 }
 
 // ultrafastModels lists the models whose Codex backend serves the Ultrafast
@@ -861,7 +862,7 @@ func normalizeServiceTier(body map[string]any, model string) string {
 			// Only some models on the Pro 500 plan serve Ultrafast; elsewhere
 			// the backend rejects or silently downgrades it. Send the request
 			// at the standard tier instead of failing it.
-			log.Printf("service_tier ultrafast is not supported for model=%s; sending at the standard tier", valueOr(model, "unknown"))
+			log.Printf("service_tier ultrafast is not supported for model=%s; sending at the standard tier", truncateLogField(valueOr(model, "unknown"), 256))
 			normalized = ""
 			delete(body, "service_tier")
 			break

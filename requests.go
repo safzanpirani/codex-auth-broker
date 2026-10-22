@@ -7,6 +7,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode"
 )
 
 type requestLogStore struct {
@@ -377,8 +378,15 @@ func clientAddress(remote string) string {
 	return remote
 }
 
+// truncateLogField bounds a value for logs and request history. Control
+// characters become spaces so client-supplied text cannot forge log lines.
 func truncateLogField(value string, max int) string {
-	value = strings.TrimSpace(value)
+	value = strings.TrimSpace(strings.Map(func(r rune) rune {
+		if unicode.IsControl(r) {
+			return ' '
+		}
+		return r
+	}, value))
 	if max <= 0 || len(value) <= max {
 		return value
 	}
