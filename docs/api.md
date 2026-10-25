@@ -150,6 +150,53 @@ GPT-6 family requests above 272K input tokens get no long-context premium in
 the Codex cost estimate, because subscription usage carries no long-context fee.
 The API-equivalent estimate still applies the public API premium.
 
+## `GET /v1/usage`
+
+A compact view of the same live wham usage fetch as `/dashboard/api/usage`,
+gated by the client key like every other `/v1/*` route (any enabled key, not
+only admin). Each call fetches fresh numbers; nothing is cached.
+
+```json
+{
+  "plan": "prolite",
+  "email": "you@example.com",
+  "fetched_at": "2026-10-25T14:47:15Z",
+  "weekly": {
+    "used_percent": 5,
+    "remaining_percent": 95,
+    "reset_at": "2026-11-01T08:07:28Z",
+    "resets_in_seconds": 580813,
+    "limit_reached": false
+  },
+  "five_hour": null,
+  "limit_reached": false,
+  "reset_credits_available": 2,
+  "credits": { "balance": "62309.5080560000", "unlimited": false },
+  "models": { "gpt-6-astra": true }
+}
+```
+
+Windows are classified by `limit_window_seconds` (up to one day is
+`five_hour`, longer is `weekly`), whichever upstream slot they arrive in; a
+missing window is `null`. A window's `limit_reached` is set at 100% used, and
+the top-level `limit_reached` also reflects the upstream flag. `reset_at` is
+RFC 3339 UTC. `credits.balance` is passed through as upstream sends it.
+
+`?format=text` returns one `text/plain` line, with reset times shown in IST
+(fixed `+05:30`):
+
+```text
+prolite · weekly 5% used (95% left), resets in 6d17h (2026-11-01 13:37 IST) · 5h n/a · 2 reset credits
+```
+
+Any upstream failure returns `502` with JSON. When the usage API answered,
+`error.upstream_status` carries its HTTP status and `error.upstream_code` its
+error code, if any:
+
+```json
+{"error": {"message": "usage API returned HTTP 403: ...", "type": "codex_auth_broker_error", "upstream_status": 403, "upstream_code": "token_expired"}}
+```
+
 ## `POST /v1/responses`
 
 The primary endpoint. It accepts OpenAI Responses-shaped requests and forwards

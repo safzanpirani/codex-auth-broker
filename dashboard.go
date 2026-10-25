@@ -168,7 +168,11 @@ func (p *responsesProxy) fetchCodexUsage(ctx context.Context) (map[string]any, i
 	defer resp.Body.Close()
 	body, _ := io.ReadAll(io.LimitReader(resp.Body, 128*1024))
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return nil, resp.StatusCode, fmt.Errorf("usage API returned HTTP %d%s", resp.StatusCode, dashboardErrorSuffix(body))
+		return nil, resp.StatusCode, &usageUpstreamError{
+			status:  resp.StatusCode,
+			code:    upstreamErrorCode(body),
+			message: fmt.Sprintf("usage API returned HTTP %d%s", resp.StatusCode, dashboardErrorSuffix(body)),
+		}
 	}
 	var parsed map[string]any
 	if err := json.Unmarshal(body, &parsed); err != nil {
@@ -180,6 +184,36 @@ func (p *responsesProxy) fetchCodexUsage(ctx context.Context) (map[string]any, i
 		"source":             "chatgpt.com/backend-api/wham/usage",
 	}
 	return parsed, http.StatusOK, nil
+}
+
+// usageUpstreamError is a non-2xx reply from the wham usage endpoint. Its
+// message is already redacted; code is the upstream's machine-readable error
+// code when the body carried one.
+type usageUpstreamError struct {
+	status  int
+	code    string
+	message string
+}
+
+func (e *usageUpstreamError) Error() string { return e.message }
+
+// upstreamErrorCode pulls a short error code from a JSON error body: a top-level
+// "code", or "code" nested under "error" or "detail".
+func upstreamErrorCode(body []byte) string {
+	var parsed map[string]any
+	if json.Unmarshal(body, &parsed) != nil {
+		return ""
+	}
+	code := stringField(parsed, "code")
+	for _, key := range []string{"error", "detail"} {
+		if code != "" {
+			break
+		}
+		if nested, ok := parsed[key].(map[string]any); ok {
+			code = stringField(nested, "code")
+		}
+	}
+	return truncateLogField(redactTokenLikeText(code), 64)
 }
 
 func dashboardErrorSuffix(body []byte) string {

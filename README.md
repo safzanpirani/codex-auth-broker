@@ -26,6 +26,7 @@ Codex account.
   - `GET /dashboard/api/requests`
   - `GET /dashboard/api/costs`
   - `GET /v1/models`
+  - `GET /v1/usage` (compact live plan limits; `?format=text` for one line)
   - `GET /v1/responses` (Responses WebSocket upgrade)
   - `POST /v1/responses`
   - `POST /v1/responses/compact`

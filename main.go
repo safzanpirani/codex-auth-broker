@@ -213,6 +213,7 @@ func newServerMux(proxy *responsesProxy) *http.ServeMux {
 	mux.HandleFunc("GET /usage", proxy.handleCodexUsage)
 	mux.HandleFunc("GET /healthz", proxy.handleHealth)
 	mux.HandleFunc("GET /v1/models", proxy.withClientAuthentication(proxy.handleModels))
+	mux.HandleFunc("GET /v1/usage", proxy.withClientAuthentication(proxy.handleUsageSummary))
 	mux.HandleFunc("GET /v1/responses", proxy.withClientAuthentication(proxy.handleResponsesWebSocket))
 	mux.HandleFunc("POST /v1/responses", proxy.withClientAuthentication(proxy.handleResponses))
 	mux.HandleFunc("POST /v1/responses/compact", proxy.withClientAuthentication(proxy.handleCompact))
