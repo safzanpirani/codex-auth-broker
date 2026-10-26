@@ -175,7 +175,7 @@ Models endpoint: GET http://127.0.0.1:8317/v1/models
 Dashboard: http://127.0.0.1:8317/dashboard
 API key: dummy, unless the broker owner gives you a real local broker key
 Primary model: gpt-6-astra
-Reasoning: omit reasoning for off/default, or send reasoning.effort low/medium/high/xhigh (the GPT-6 family and gpt-5.6 also accept max)
+Reasoning: omit reasoning for the model's default effort, or send reasoning.effort low/medium/high/xhigh (the GPT-6 family and gpt-5.6 also accept max). To turn reasoning off on gpt-6.1-terra, send reasoning.effort "none"; the broker forwards it unchanged.
 Prompt cache key: use a stable project key, for example "safzan-coding-agent"
 
 Use /v1/responses for this provider configuration. The broker also supports
