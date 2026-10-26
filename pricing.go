@@ -49,6 +49,7 @@ var defaultModelPricing = map[string]modelPricing{
 	"gpt-6-astra":   {InputPerM: 10.00, CachedPerM: 1.00, CacheWritePerM: 10.00, OutputPerM: 50.00},
 	"gpt-6-sol":     {InputPerM: 2.00, CachedPerM: 0.20, CacheWritePerM: 2.00, OutputPerM: 10.00},
 	"gpt-6.1-sol":   {InputPerM: 2.00, CachedPerM: 0.10, CacheWritePerM: 2.00, OutputPerM: 10.00},
+	"gpt-6.1-terra": {InputPerM: 1.00, CachedPerM: 0.05, CacheWritePerM: 1.00, OutputPerM: 5.00},
 	"gpt-6-luna":    {InputPerM: 0.10, CachedPerM: 0.01, CacheWritePerM: 0.10, OutputPerM: 0.50},
 	"gpt-5.6":       longContextModelPricing(4.00, 0.40, 4.00, 20.00),
 	"gpt-5.6-sol":   longContextModelPricing(4.00, 0.40, 4.00, 20.00),
@@ -239,7 +240,7 @@ func estimateAPICostUSDForTier(table map[string]modelPricing, model, serviceTier
 }
 
 // isGPT6Model reports whether model belongs to the GPT-6 family (gpt-6-astra,
-// gpt-6-sol, gpt-6-luna, gpt-6.1-sol and their dated snapshots).
+// gpt-6-sol, gpt-6-luna, gpt-6.1-sol, gpt-6.1-terra and their dated snapshots).
 func isGPT6Model(model string) bool {
 	if model == "gpt-6" || strings.HasPrefix(model, "gpt-6-") {
 		return true

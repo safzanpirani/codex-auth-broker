@@ -96,6 +96,7 @@ http://127.0.0.1:8317/v1
 gpt-6-astra(max)
 gpt-6-sol(max)
 gpt-6.1-sol(max)
+gpt-6.1-terra(high)
 gpt-6-luna(high)
 gpt-5.5(low)
 gpt-5.5(medium)
@@ -479,6 +480,7 @@ Recommended model ids:
 gpt-6-astra
 gpt-6-sol
 gpt-6.1-sol
+gpt-6.1-terra
 gpt-6-luna
 gpt-5.5
 gpt-5.4
@@ -488,8 +490,8 @@ gpt-5.3-codex
 
 Declare `reasoning: true` so Pi's thinking-level control maps to
 `reasoning.effort`, and declare `input: ["text", "image"]` for multimodal
-requests. Set `contextWindow` to `500000` for `gpt-6.1-sol` and `272000` for
-the other GPT-6 models; `GET /v1/models` reports the same values. Cost metadata
+requests. Set `contextWindow` to `500000` for `gpt-6.1-sol` and `gpt-6.1-terra`
+and `272000` for the other GPT-6 models; `GET /v1/models` reports the same values. Cost metadata
 should use the equivalent OpenAI API per-million-token prices for reporting,
 even though traffic through this broker uses Codex OAuth instead of an OpenAI
 API billing key.

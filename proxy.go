@@ -133,13 +133,14 @@ func (p *responsesProxy) handleModels(w http.ResponseWriter, r *http.Request) {
 }
 
 // modelContextWindows holds the default Codex context window per model, in
-// tokens. GPT-6.1 Sol defaults to 500K through Codex; the other GPT-6 models
-// stay at 272K. Models without an entry advertise no window.
+// tokens. GPT-6.1 Sol and Terra default to 500K through Codex; the other GPT-6
+// models stay at 272K. Models without an entry advertise no window.
 var modelContextWindows = map[string]int64{
-	"gpt-6.1-sol": 500_000,
-	"gpt-6-astra": 272_000,
-	"gpt-6-sol":   272_000,
-	"gpt-6-luna":  272_000,
+	"gpt-6.1-sol":   500_000,
+	"gpt-6.1-terra": 500_000,
+	"gpt-6-astra":   272_000,
+	"gpt-6-sol":     272_000,
+	"gpt-6-luna":    272_000,
 }
 
 // modelContextWindow resolves a client-facing model id, including effort

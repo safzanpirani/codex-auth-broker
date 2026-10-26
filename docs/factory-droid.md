@@ -26,6 +26,7 @@ keep model-side prompt-cache affinity.
 gpt-6-astra(max)
 gpt-6-sol(max)
 gpt-6.1-sol(max)
+gpt-6.1-terra(high)
 gpt-6-luna(high)
 gpt-5.5(low)
 gpt-5.5(medium)

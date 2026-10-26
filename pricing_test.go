@@ -292,7 +292,7 @@ func TestLoadModelPricingOverrideRejectsInvalidValues(t *testing.T) {
 }
 
 func TestLookupModelPricingGPT6Family(t *testing.T) {
-	cases := map[string]float64{"gpt-6-astra": 10.00, "gpt-6-sol": 2.00, "gpt-6-luna": 0.10, "gpt-6.1-sol": 2.00}
+	cases := map[string]float64{"gpt-6-astra": 10.00, "gpt-6-sol": 2.00, "gpt-6-luna": 0.10, "gpt-6.1-sol": 2.00, "gpt-6.1-terra": 1.00}
 	for model, wantInput := range cases {
 		pricing, ok := lookupModelPricing(defaultModelPricing, model)
 		if !ok || pricing.InputPerM != wantInput {

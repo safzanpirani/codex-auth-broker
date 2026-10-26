@@ -106,6 +106,8 @@ gpt-6-sol
 gpt-6-sol(max)
 gpt-6.1-sol
 gpt-6.1-sol(max)
+gpt-6.1-terra
+gpt-6.1-terra(max)
 gpt-6-luna
 gpt-6-luna(max)
 gpt-5.5

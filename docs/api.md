@@ -143,7 +143,7 @@ inherit the window of their base model:
 
 | Model | Context window |
 |---|---|
-| `gpt-6.1-sol` | 500,000 |
+| `gpt-6.1-sol`, `gpt-6.1-terra` | 500,000 |
 | `gpt-6-astra`, `gpt-6-sol`, `gpt-6-luna` | 272,000 |
 
 GPT-6 family requests above 272K input tokens get no long-context premium in
