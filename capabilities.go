@@ -227,8 +227,9 @@ func (p *responsesProxy) handleCompact(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var envelope struct {
-		Output json.RawMessage `json:"output"`
-		Usage  map[string]any  `json:"usage"`
+		Output      json.RawMessage `json:"output"`
+		Usage       map[string]any  `json:"usage"`
+		ServiceTier string          `json:"service_tier"`
 	}
 	if json.Unmarshal(result, &envelope) != nil || len(envelope.Output) == 0 || envelope.Output[0] != '[' {
 		p.writeDispatchFailure(w, entry, &dispatchFailure{status: http.StatusBadGateway, message: "invalid upstream compaction response"})
@@ -236,6 +237,13 @@ func (p *responsesProxy) handleCompact(w http.ResponseWriter, r *http.Request) {
 	}
 	// Preserve encrypted compaction items, ordering, usage and future fields.
 	entry.markUsage(extractTokenUsage(map[string]any{"usage": envelope.Usage}))
+	// Price what was dispatched: the catalog check may have dropped priority,
+	// and the compaction response does not always echo the applied tier.
+	applied := strings.ToLower(strings.TrimSpace(envelope.ServiceTier))
+	if applied == "" && tier == "priority" && !strings.HasSuffix(resp.Request.Header.Get(codexRoutingHintHeader), ";tier=priority") {
+		applied = "default"
+	}
+	entry.markAppliedServiceTier(applied)
 	if state := resp.Header.Get("x-codex-turn-state"); state != "" {
 		w.Header().Set("x-codex-turn-state", state)
 	}

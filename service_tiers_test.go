@@ -178,3 +178,40 @@ func TestServiceTierCatalogCancellationAndWebSocket(t *testing.T) {
 		t.Errorf("catalog fetches = %d, want 1", calls.Load())
 	}
 }
+
+// A downgraded compaction must not be priced at the requested priority tier.
+func TestCompactionRecordsAppliedServiceTier(t *testing.T) {
+	for _, tc := range []struct{ name, catalogTiers, upstreamTier, wantWire, wantApplied string }{
+		{name: "downgraded_unreported", catalogTiers: `[]`, wantApplied: "default"},
+		{name: "supported_reported", catalogTiers: `[{"id":"priority"}]`, upstreamTier: `,"service_tier":"priority"`, wantWire: "priority", wantApplied: "priority"},
+		{name: "supported_unreported", catalogTiers: `[{"id":"priority"}]`, wantWire: "priority"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.Method == http.MethodGet {
+					fmt.Fprintf(w, `{"models":[{"slug":"gpt-5.5","service_tiers":%s}]}`, tc.catalogTiers)
+					return
+				}
+				body, _ := decodeRequestBody(r.Body, "")
+				if got := stringField(body, "service_tier"); got != tc.wantWire {
+					t.Errorf("wire tier = %q, want %q", got, tc.wantWire)
+				}
+				fmt.Fprintf(w, `{"output":[],"usage":{"input_tokens":1}%s}`, tc.upstreamTier)
+			}))
+			defer upstream.Close()
+			p := capabilityProxy(t, upstream)
+			p.cfg.modelsURL = upstream.URL + "/models"
+			r := httptest.NewRequest(http.MethodPost, "/v1/responses/compact", strings.NewReader(`{"model":"gpt-5.5","input":[],"service_tier":"fast"}`))
+			r.Header.Set("Authorization", "Bearer local-key")
+			w := httptest.NewRecorder()
+			newServerMux(p).ServeHTTP(w, r)
+			if w.Code != http.StatusOK {
+				t.Fatalf("status = %d: %s", w.Code, w.Body.String())
+			}
+			entries := p.requests.snapshot(1).RequestLog
+			if len(entries) != 1 || entries[0].ServiceTier != "priority" || entries[0].AppliedServiceTier != tc.wantApplied {
+				t.Fatalf("requested/applied tiers = %+v, want priority/%s", entries, tc.wantApplied)
+			}
+		})
+	}
+}
